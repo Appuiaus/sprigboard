@@ -25,3 +25,11 @@ No secrets in either.
 - **Claude API:** model `claude-opus-5-5`, structured output via `output_config.format`, server-side
   `fallbacks: "default"`. Check the current API docs before changing it.
 - Run `npm test` and `npm run typecheck` before pushing.
+
+## Creating repositories (owner's rule, 2026-11-06)
+
+When a project needs a new GitHub repository, create it yourself without asking Pedro first:
+private by default, under the right owner (`s2925534` for Pedro's projects, `Appuiaus` for Ben's
+apps), named after the product. Where the session cannot create repositories (cloud sessions block
+it), tell Pedro straight away the exact owner, name and visibility to create, and keep building
+locally until it exists. Then attach it and push.
