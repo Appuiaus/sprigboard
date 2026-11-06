@@ -13,12 +13,15 @@
     {
       "binding": "DB",
       "database_name": "sprigboard-db",
-      // Replace with the id printed by `npx wrangler d1 create sprigboard-db` (see docs/SETUP.md).
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // Created 2026-11-06 on Ben's account, Oceania region.
+      "database_id": "1173cda8-2adb-440e-b059-a12d9436e2db",
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [{ "binding": "FILES", "bucket_name": "sprigboard-files" }],
+  // R2 isn't enabled on Ben's account yet. Once it is, create the bucket
+  // (`npx wrangler r2 bucket create sprigboard-files`), uncomment this and deploy.
+  // Until then uploads show "File storage isn't turned on yet".
+  // "r2_buckets": [{ "binding": "FILES", "bucket_name": "sprigboard-files" }],
   // ACCESS_TEAM_DOMAIN and ACCESS_AUD are set in the dashboard (Settings ->
   // Variables and Secrets); keep_vars stops a deploy from wiping them. Until both
   // are set, every page returns 503 (fails closed).

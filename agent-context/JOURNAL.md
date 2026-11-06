@@ -2,6 +2,16 @@
 
 Curated, newest first: what each session did and why, with gotchas for the next session.
 
+## 2026-11-06: first deploy (cloud session)
+
+- Deployed to Ben's account: Worker `sprigboard` on the custom domain sprigboard.appui.com.au, and D1
+  `sprigboard-db` created in OC (Oceania) for Jamie's latency. A first copy was created in ENAM by
+  default; it was empty and deleted at once.
+- R2 is not enabled on the account, so `FILES` is optional in code. Uploads show a clear notice
+  instead of failing, and the binding is commented out in `wrangler.jsonc` until Ben turns R2 on.
+- The token has no Access scope, so the Access app is an owner step. The site fails closed (503)
+  until then.
+
 ## 2026-11-06: v1 (cloud session)
 
 - **What:** the first full version, built from Pedro's call with Jamie: jobs, plan upload, plan

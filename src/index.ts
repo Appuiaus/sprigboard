@@ -15,7 +15,8 @@ import {
 
 export interface Env extends AccessEnv {
   DB: D1Database;
-  FILES: R2Bucket;
+  /** R2 bucket for plans, plant graphics and logos. Optional until R2 is turned on in the account. */
+  FILES?: R2Bucket;
   ANTHROPIC_API_KEY?: string;
   /** Local development only (.dev.vars): skips Access when the request is to localhost. */
   DEV_ACCESS_EMAIL?: string;
@@ -27,6 +28,7 @@ type Ctx = { env: Env; req: Request; url: URL; email: string };
 const JOB_STATUSES: [string, string][] = [["new", "New"], ["drawing", "Drawing"], ["sent", "Sent to client"], ["invoiced", "Invoiced"], ["done", "Done"]];
 const INVOICE_STATUSES: [string, string][] = [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]];
 const KIND_NAMES: Record<string, string> = { plant: "Plant", street: "Street", dimension: "Dimension", marking: "Marking", note: "Note" };
+const NO_STORAGE = "File storage isn't turned on yet (R2 needs enabling in the Cloudflare account). Everything else works.";
 const MAX_UPLOAD = 30 * 1024 * 1024; // the Claude API takes requests up to 32 MB
 
 // ---------- small helpers ----------
@@ -79,6 +81,7 @@ const fileKey = (prefix: string, name: string) => `${prefix}/${crypto.randomUUID
 
 async function serveObject(env: Env, key: string | null, filename: string, mime: string): Promise<Response> {
   if (!key) return new Response("Not found", { status: 404 });
+  if (!env.FILES) return new Response(NO_STORAGE, { status: 503 });
   const obj = await env.FILES.get(key);
   if (!obj) return new Response("Not found", { status: 404 });
   return new Response(obj.body, {
@@ -262,6 +265,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
         ${iconBtn({ icon: "file", label: "Title block as CSV", href: `/jobs/${id}/title-block.csv`, download: true })}</div>
     </div>
     <div class="bar"><h2>Plans</h2>${iconBtn({ icon: "upload", label: "Upload plan files", dialog: "upload" })}</div>
+    ${c.env.FILES ? "" : `<div class="flash err">${NO_STORAGE}</div>`}
     ${hasKey ? "" : `<div class="flash err">Plan reading is off until the Claude API key is added (see SETUP in the repo). Everything else works.</div>`}
     <div class="flash" id="reading" hidden>Claude is reading the plan. This can take a minute or two for a detailed PDF; keep this page open.</div>
     ${table(["File", "Size", "Read", "Actions"], fileRows, "No plan uploaded yet.")}
@@ -300,6 +304,7 @@ function invoiceFromJobFields(j: Row, st: Record<string, string>): string {
 
 async function uploadFiles(c: Ctx, jobId: number): Promise<Response> {
   if (!(await getJob(c.env, jobId))) return notFound(c, "job");
+  if (!c.env.FILES) return redirect(`/jobs/${jobId}`, NO_STORAGE, true);
   const form = await c.req.formData();
   const files = form.getAll("files").filter((f): f is File => typeof f !== "string" && f.size > 0);
   if (!files.length) return redirect(`/jobs/${jobId}`, "Choose at least one file.", true);
@@ -308,7 +313,7 @@ async function uploadFiles(c: Ctx, jobId: number): Promise<Response> {
     if (f.size > MAX_UPLOAD) { skipped.push(`${f.name} (over 30 MB)`); continue; }
     const mime = f.type || "application/octet-stream";
     const key = fileKey(`plans/${jobId}`, f.name);
-    await c.env.FILES.put(key, f.stream(), { httpMetadata: { contentType: mime } });
+    await c.env.FILES!.put(key, f.stream(), { httpMetadata: { contentType: mime } });
     await c.env.DB.prepare(`INSERT INTO plan_files (job_id, r2_key, filename, mime, size) VALUES (?,?,?,?,?)`).bind(jobId, key, f.name, mime, f.size).run();
   }
   const done = files.length - skipped.length;
@@ -321,6 +326,7 @@ async function readFile(c: Ctx, fileId: number): Promise<Response> {
   const jobId = n(f.job_id);
   if (!c.env.ANTHROPIC_API_KEY) return redirect(`/jobs/${jobId}`, "Add the Claude API key first (see SETUP).", true);
   if (!isSupportedPlan(s(f.mime))) return redirect(`/jobs/${jobId}`, "Claude can read PDF, JPEG, PNG, GIF and WebP files.", true);
+  if (!c.env.FILES) return redirect(`/jobs/${jobId}`, NO_STORAGE, true);
   const obj = await c.env.FILES.get(s(f.r2_key));
   if (!obj) return redirect(`/jobs/${jobId}`, "The stored file is missing.", true);
   try {
@@ -420,10 +426,11 @@ async function savePlant(c: Ctx, id: number | null): Promise<Response> {
   const file = f.get("file");
   let fileCols: [string, string, string] | null = null;
   if (file && typeof file !== "string" && file.size > 0) {
+    if (!c.env.FILES) return redirect("/plants", NO_STORAGE, true);
     if (file.size > 10 * 1024 * 1024) return redirect("/plants", "Symbol files can be up to 10 MB.", true);
     const key = fileKey("symbols", file.name);
     const mime = file.type || "application/octet-stream";
-    await c.env.FILES.put(key, file.stream(), { httpMetadata: { contentType: mime } });
+    await c.env.FILES!.put(key, file.stream(), { httpMetadata: { contentType: mime } });
     fileCols = [key, file.name, mime];
   }
   const common = s(f.get("common")).trim(), code = s(f.get("code")).trim();
@@ -471,9 +478,10 @@ async function saveClient(c: Ctx, id: number | null): Promise<Response> {
   const logo = f.get("logo");
   let logoKey: string | null = null;
   if (logo && typeof logo !== "string" && logo.size > 0) {
+    if (!c.env.FILES) return redirect("/clients", NO_STORAGE, true);
     if (!isImage(logo.type) || logo.size > 5 * 1024 * 1024) return redirect("/clients", "The logo must be an image up to 5 MB.", true);
     logoKey = fileKey("logos", logo.name);
-    await c.env.FILES.put(logoKey, logo.stream(), { httpMetadata: { contentType: logo.type } });
+    await c.env.FILES!.put(logoKey, logo.stream(), { httpMetadata: { contentType: logo.type } });
   }
   const vals = [v("name"), v("contact"), v("email"), v("address"), v("copyright"), v("disclaimer")];
   if (id === null) {
@@ -719,7 +727,7 @@ export async function route(c: Ctx): Promise<Response> {
     }
     if ((r = m(/^\/logos\/(\d+)$/))) {
       const cl = await env.DB.prepare(`SELECT logo_key FROM clients WHERE id=? AND deleted_at IS NULL`).bind(+r[1]).first<Row>();
-      const obj = cl?.logo_key ? await env.FILES.head(s(cl.logo_key)) : null;
+      const obj = cl?.logo_key && env.FILES ? await env.FILES.head(s(cl.logo_key)) : null;
       return serveObject(env, cl?.logo_key ? s(cl.logo_key) : null, "logo", obj?.httpMetadata?.contentType ?? "image/png");
     }
     if (p === "/plants") return plantsPage(c);

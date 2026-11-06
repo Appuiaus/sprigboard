@@ -1,5 +1,9 @@
 # Setup: deploying Sprigboard on Ben's Cloudflare account
 
+> **Status 2026-11-06:** steps 1 (D1 only) and 2 are done; the site is live and fails closed. Still to
+> do: R2 (Ben enables it, then create the bucket and uncomment `r2_buckets`), step 3 (Access + variables)
+> and the `ANTHROPIC_API_KEY` secret.
+
 Everything here is new and separately named. Nothing existing in the account or the
 `appui.com.au` zone is changed, apart from the one DNS record Cloudflare adds for the custom domain.
 
@@ -7,7 +11,7 @@ Everything here is new and separately named. Nothing existing in the account or 
 
 ```sh
 npx wrangler login                       # or CLOUDFLARE_API_TOKEN for Ben's account
-npx wrangler d1 create sprigboard-db     # copy the database_id into wrangler.jsonc
+npx wrangler d1 create sprigboard-db --location oc   # copy the database_id into wrangler.jsonc
 npx wrangler r2 bucket create sprigboard-files
 npx wrangler d1 migrations apply sprigboard-db --remote
 ```
