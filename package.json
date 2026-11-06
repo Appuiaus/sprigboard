@@ -1,0 +1,20 @@
+{
+  "name": "sprigboard",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261106.1",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.0",
+    "wrangler": "^4.40.0"
+  }
+}

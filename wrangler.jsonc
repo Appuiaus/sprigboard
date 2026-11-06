@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sprigboard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  // Served only on Ben's subdomain. Cloudflare creates the DNS record for a
+  // custom domain itself; nothing else in the appui.com.au zone is touched.
+  "routes": [{ "pattern": "sprigboard.appui.com.au", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "sprigboard-db",
+      // Replace with the id printed by `npx wrangler d1 create sprigboard-db` (see docs/SETUP.md).
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "sprigboard-files" }],
+  // ACCESS_TEAM_DOMAIN and ACCESS_AUD are set in the dashboard (Settings ->
+  // Variables and Secrets); keep_vars stops a deploy from wiping them. Until both
+  // are set, every page returns 503 (fails closed).
+  "keep_vars": true,
+  "observability": { "enabled": true }
+  // Secret (dashboard or `wrangler secret put`, never in this file): ANTHROPIC_API_KEY
+}
