@@ -11,7 +11,7 @@ export interface MailEnv {
   MAIL_MODE?: string;   // "log" for local development
 }
 
-export interface Mail { to: string; subject: string; text: string; html: string; replyTo?: string }
+export interface Mail { to: string; subject: string; text: string; html: string; replyTo?: string; fromName?: string }
 
 export function mailEnabled(env: MailEnv): boolean {
   return env.MAIL_MODE === "log" || !!(env.MAILJET_API_KEY && env.MAILJET_API_SECRET && env.MAIL_FROM);
@@ -37,7 +37,7 @@ export async function sendMail(env: MailEnv, mail: Mail, fetchImpl: typeof fetch
         authorization: `Basic ${btoa(`${env.MAILJET_API_KEY}:${env.MAILJET_API_SECRET}`)}`,
       },
       body: JSON.stringify({
-        Messages: [{ From: parseFrom(env.MAIL_FROM!), To: [{ Email: mail.to }], ...(mail.replyTo ? { ReplyTo: { Email: mail.replyTo } } : {}), Subject: mail.subject, TextPart: mail.text, HTMLPart: mail.html }],
+        Messages: [{ From: mail.fromName ? { ...parseFrom(env.MAIL_FROM!), Name: mail.fromName } : parseFrom(env.MAIL_FROM!), To: [{ Email: mail.to }], ...(mail.replyTo ? { ReplyTo: { Email: mail.replyTo } } : {}), Subject: mail.subject, TextPart: mail.text, HTMLPart: mail.html }],
       }),
     });
     if (!res.ok) console.error(`mail failed: ${res.status}`);

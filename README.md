@@ -16,6 +16,11 @@ Sprigboard handles the work around the drawing:
 | **Pricing** | Fixed prices by job size (Small, Medium, Large, Extra large, all editable), not by the hour. |
 | **Invoices** | Jamie's own logo at the top; email an invoice to the client (replies go to her) once email is set up. Created from a job at its size price, numbered on from Jamie's last paper invoice, with GST handled by two Settings switches ("Registered for GST" and "Add GST to invoices") plus an on/off switch on each invoice, payment details, draft/sent/paid status, overdue flag, and print or save as PDF from the browser. |
 
+**Settings** (`src/settings.ts`): every business choice is a setting Jamie changes herself, in seven sections:
+business details; invoices and GST (rate, line wording, default notes, payment terms); numbering (prefixes,
+digits); invoice emails (sender name, subject and message templates); plans (extra instructions for Claude,
+species and genus matching); job status names; time zone and the getting-started checklist.
+
 A getting-started checklist on the Jobs page walks through the first setup and can be hidden.
 Until R2 is enabled, files up to 1 MB (plant graphics, logos, small plans) are stored in D1 (`src/storage.ts`); bigger PDFs need R2.
 Owners can download all the data as JSON (Settings → download icon). The export holds no password hashes or other secrets.

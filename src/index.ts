@@ -8,9 +8,10 @@ import { passkeyAccountRoute, passkeyLoginRoute } from "./passkeys";
 import { mailEnabled, sendMail } from "./mail";
 import { D1_MAX_BYTES, getBytes, getFile, maxUpload, putFile, sizeLabel, StorageError } from "./storage";
 import { extractPlan, ExtractionError, isSupportedPlan, ITEM_KINDS } from "./extract";
+import { fillTemplate, jobStatuses, parseSetting, SECTIONS, SETTINGS, withDefaults, type SectionId, type SettingDef } from "./settings";
 import {
-  addDays, brisbaneTime, continueFrom, formatMinutes, minutesBetween, normalisePlant, parseDuration, plantRowsFromCsv, esc, formatDollars, formatNumber, invoiceTotals, matchSymbol, parseDollars,
-  titleBlockCsv, titleBlockXml, toCsv, todayBrisbane, type InvoiceLine, type Symbol, type TitleBlock,
+  addDays, continueFrom, formatMinutes, minutesBetween, normalisePlant, parseDuration, plantRowsFromCsv, esc, formatDollars, formatNumber, invoiceTotals, matchSymbol, parseDollars,
+  titleBlockCsv, titleBlockXml, toCsv, todayIn, localTime, percentLabel, type InvoiceLine, type Symbol, type TitleBlock,
 } from "./lib";
 import {
   area, badge, confirmDelete, dialog, field, formDialog, icon, iconBtn, layout, pills, select, table, toggle,
@@ -23,9 +24,8 @@ export interface Env extends AuthEnv {
 }
 
 type Row = Record<string, unknown>;
-type Ctx = { env: Env; req: Request; url: URL; user: User };
+type Ctx = { env: Env; req: Request; url: URL; user: User; st: Record<string, string> };
 
-const JOB_STATUSES: [string, string][] = [["new", "New"], ["drawing", "Drawing"], ["sent", "Sent to client"], ["invoiced", "Invoiced"], ["done", "Done"]];
 const INVOICE_STATUSES: [string, string][] = [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]];
 const KIND_NAMES: Record<string, string> = { plant: "Plant", street: "Street", dimension: "Dimension", marking: "Marking", note: "Note" };
 const MAX_UPLOAD = 30 * 1024 * 1024; // the Claude API takes requests up to 32 MB
@@ -56,7 +56,7 @@ function download(body: string, filename: string, type: string): Response {
 
 async function settings(env: Env): Promise<Record<string, string>> {
   const { results } = await env.DB.prepare(`SELECT key, value FROM settings`).all<{ key: string; value: string }>();
-  return Object.fromEntries(results.map((r) => [r.key, r.value]));
+  return withDefaults(Object.fromEntries(results.map((r) => [r.key, r.value])));
 }
 
 /** Atomically takes the next number in a series ("job" or "invoice"). */
@@ -105,7 +105,7 @@ async function jobsPage(c: Ctx): Promise<Response> {
   const status = c.url.searchParams.get("status") ?? "";
   const conds: string[] = [];
   const args: unknown[] = [];
-  if (JOB_STATUSES.some(([k]) => k === status)) { conds.push("j.status = ?"); args.push(status); }
+  if (jobStatuses(c.st).some(([k]) => k === status)) { conds.push("j.status = ?"); args.push(status); }
   else if (show !== "all") conds.push("j.status <> 'done'");
   if (q) {
     // Escape LIKE wildcards in what Jamie typed so "50%" searches for "50%".
@@ -134,7 +134,7 @@ async function jobsPage(c: Ctx): Promise<Response> {
     esc(j.client_name) || '<span class="muted">None</span>',
     esc(j.tier_name) || '<span class="muted">Not set</span>',
     n(j.items) ? `${n(j.done_items)} / ${n(j.items)}` : `<span class="muted">${n(j.files) ? "Not read" : "No plan"}</span>`,
-    statusBadge(s(j.status)),
+    statusBadge(s(j.status), "job", c.st),
     iconBtn({ icon: "eye", label: `Open job ${s(j.job_number)}`, href: `/jobs/${j.id}` }) +
       iconBtn({ icon: "bin", label: `Delete job ${s(j.job_number)}`, dialog: `del-job-${j.id}`, danger: true }),
   ]);
@@ -143,11 +143,11 @@ async function jobsPage(c: Ctx): Promise<Response> {
     ${iconBtn({ icon: "plus", label: "New job", dialog: "new-job", attrs: 'style="width:38px;height:38px"' }).replace('class="ib"', 'class="ib primary"')}</div>
     <p class="sub">Each job gets the next job number. Upload the plan, let Claude read it, then tick items off as you draw.</p>
     ${onboarding}
-    <div class="stats"><a class="stat" href="/?status=new"><b>${count("new")}</b><span>New</span></a><a class="stat" href="/?status=drawing"><b>${count("drawing")}</b><span>Drawing</span></a>
-      <a class="stat" href="/?status=sent"><b>${count("sent")}</b><span>Sent to client</span></a><a class="stat" href="/invoices"><b>${formatDollars(owing?.t ?? 0)}</b><span>${owing?.n ?? 0} invoice${owing?.n === 1 ? "" : "s"} unpaid</span></a></div>
+    <div class="stats"><a class="stat" href="/?status=new"><b>${count("new")}</b><span>${esc(jobStatuses(c.st)[0][1])}</span></a><a class="stat" href="/?status=drawing"><b>${count("drawing")}</b><span>${esc(jobStatuses(c.st)[1][1])}</span></a>
+      <a class="stat" href="/?status=sent"><b>${count("sent")}</b><span>${esc(jobStatuses(c.st)[2][1])}</span></a><a class="stat" href="/invoices"><b>${formatDollars(owing?.t ?? 0)}</b><span>${owing?.n ?? 0} invoice${owing?.n === 1 ? "" : "s"} unpaid</span></a></div>
     <form class="filters" method="get" action="/" role="search">
       <label class="fld"><span class="sr">Search jobs</span><input type="search" name="q" value="${esc(q)}" placeholder="Search job number, project, address or client"></label>
-      <label class="fld"><span class="sr">Status</span><select name="status"><option value="">${show === "all" ? "All statuses" : "Open jobs"}</option>${JOB_STATUSES.map(([k, t]) => `<option value="${k}"${k === status ? " selected" : ""}>${t}</option>`).join("")}</select></label>
+      <label class="fld"><span class="sr">Status</span><select name="status"><option value="">${show === "all" ? "All statuses" : "Open jobs"}</option>${jobStatuses(c.st).map(([k, t]) => `<option value="${k}"${k === status ? " selected" : ""}>${t}</option>`).join("")}</select></label>
       ${show === "all" ? '<input type="hidden" name="show" value="all">' : ""}
       <button class="btn">Search</button>${filtered ? '<a class="btn" href="/">Clear</a>' : ""}
       <a class="btn plain" href="/?show=${show === "all" ? "open" : "all"}${q ? `&q=${encodeURIComponent(q)}` : ""}">${show === "all" ? "Hide done jobs" : "Show done jobs"}</a></form>
@@ -156,20 +156,20 @@ async function jobsPage(c: Ctx): Promise<Response> {
   return layout({ title: "Jobs", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
-function statusBadge(st: string, kind: "job" | "invoice" = "job"): string {
-  const name = (kind === "invoice" ? INVOICE_STATUSES : JOB_STATUSES).find(([k]) => k === st)?.[1] ?? st;
+function statusBadge(st: string, kind: "job" | "invoice" = "job", settingsMap: Record<string, string> = {}): string {
+  const name = (kind === "invoice" ? INVOICE_STATUSES : jobStatuses(withDefaults(settingsMap))).find(([k]) => k === st)?.[1] ?? st;
   const tone = st === "done" || st === "paid" ? "ok" : st === "new" || st === "draft" ? "muted" : st === "sent" || st === "invoiced" ? "warn" : "";
   return badge(name, tone);
 }
 
-function jobFields(j: Row, clients: Row[], tiers: Row[]): string {
+function jobFields(j: Row, clients: Row[], tiers: Row[], statuses: [string, string][] = []): string {
   return `${field("project", "Project or end client", s(j.project), { full: true, hint: "Shown on the title block, e.g. the homeowner's name." })}
     ${field("site_address", "Site address", s(j.site_address), { full: true })}
     ${select("client_id", "Client", [["", "None"], ...clients.map((c) => [s(c.id), s(c.name)] as [string, string])], s(j.client_id))}
     ${field("scale", "Drawing scale", s(j.scale), { hint: "e.g. 1:200 @ A3" })}
     ${pills("tier_id", "Job size", [["", "Not set"], ...tiers.map((t) => [s(t.id), `${s(t.name)}${n(t.price_cents) ? ` · ${formatDollars(n(t.price_cents))}` : ""}`] as [string, string])], s(j.tier_id))}
     ${area("scope", "Scope of works", s(j.scope))}
-    ${j.id ? pills("status", "Status", JOB_STATUSES, s(j.status)) : ""}
+    ${j.id ? pills("status", "Status", statuses, s(j.status)) : ""}
     ${area("notes", "Notes", s(j.notes), { rows: 2 })}`;
 }
 
@@ -190,7 +190,7 @@ async function createJob(c: Ctx): Promise<Response> {
 
 async function updateJob(c: Ctx, id: number): Promise<Response> {
   const v = jobValues(await c.req.formData());
-  const status = JOB_STATUSES.some(([k]) => k === v.status) ? v.status : "new";
+  const status = jobStatuses(c.st).some(([k]) => k === v.status) ? v.status : "new";
   await c.env.DB.prepare(
     `UPDATE jobs SET client_id=?, project=?, site_address=?, scope=?, tier_id=?, scale=?, notes=?, status=? WHERE id=? AND deleted_at IS NULL`,
   ).bind(v.client_id, v.project, v.site_address, v.scope, v.tier_id, v.scale, v.notes, status, id).run();
@@ -233,7 +233,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
   });
 
   const itemRows = items.map((i) => {
-    const m = s(i.kind) === "plant" ? matchSymbol(s(i.label), syms) : null;
+    const m = s(i.kind) === "plant" ? matchSymbol(s(i.label), syms, { species: c.st.match_species === "1", genus: c.st.match_genus === "1" }) : null;
     const sym = m ? syms.find((x) => x.id === m.symbol.id) : null;
     const symCell = s(i.kind) !== "plant" ? "" : m
       ? `${sym?.r2_key && isImage(s(sym.mime)) ? `<img class="thumb" src="/symbols/${m.symbol.id}" alt=""> ` : ""}${esc(m.symbol.code || m.symbol.botanical)}${m.how === "exact" || m.how === "code" ? "" : ` ${badge(m.how === "species" ? "species match" : "genus only", "warn")}`}`
@@ -272,7 +272,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
   ]);
 
   const body = `<div class="bar"><h1>${esc(j.job_number)} ${j.project ? `· ${esc(j.project)}` : ""}</h1>
-      ${statusBadge(s(j.status))}
+      ${statusBadge(s(j.status), "job", c.st)}
       ${iconBtn({ icon: "pencil", label: "Edit job", dialog: "edit-job" })}
       ${iconBtn({ icon: "receipt", label: "Create an invoice for this job", dialog: "new-invoice" })}
       ${iconBtn({ icon: "bin", label: "Delete job", dialog: "del-job", danger: true })}</div>
@@ -307,15 +307,15 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
       ${iconBtn({ icon: "clock", label: "Add time by hand", dialog: "add-time" })}</div>
     <p class="sub small">Time spent so far: <b>${formatMinutes(totalMin)}</b>. You don't charge by the hour; this helps set your size prices (see Settings).</p>
     ${times.length ? table(["When", "Who", "Time", "Note", "Actions"], times.map((t) => [
-      esc(brisbaneTime(s(t.started_at))), esc(s(t.user_name) || s(t.user_email)),
+      esc(localTime(s(t.started_at), c.st.timezone)), esc(s(t.user_name) || s(t.user_email)),
       t.ended_at ? formatMinutes(n(t.minutes)) : `<span class="timer"><span class="dot" aria-hidden="true"></span><span data-since="${esc(t.started_at)}">running</span></span>`,
       esc(t.note),
       iconBtn({ icon: "bin", label: "Delete this time entry", dialog: `del-time-${t.id}`, danger: true }),
     ]), "") : ""}
     ${times.map((t) => confirmDelete(`del-time-${t.id}`, "this time entry", `/time/${t.id}/delete`)).join("")}
-    ${formDialog("add-time", "Add time by hand", `/jobs/${id}/time`, `${field("duration", "Time spent", "", { required: true, hint: "e.g. 90, 1:30 or 1.5h", attrs: 'autocomplete="off"' })}${field("date", "Date", todayBrisbane(), { type: "date" })}${field("note", "Note", "", { full: true })}`, "Add")}
+    ${formDialog("add-time", "Add time by hand", `/jobs/${id}/time`, `${field("duration", "Time spent", "", { required: true, hint: "e.g. 90, 1:30 or 1.5h", attrs: 'autocomplete="off"' })}${field("date", "Date", todayIn(c.st.timezone), { type: "date" })}${field("note", "Note", "", { full: true })}`, "Add")}
     ${invoices.length ? `<h2>Invoices</h2>${table(["Invoice", "Issued", "Total", "Status", "Actions"], invRows, "")}` : ""}
-    ${formDialog("edit-job", `Edit ${esc(j.job_number)}`, `/jobs/${id}`, jobFields(j, clients, tiers))}
+    ${formDialog("edit-job", `Edit ${esc(j.job_number)}`, `/jobs/${id}`, jobFields(j, clients, tiers, jobStatuses(c.st)))}
     ${confirmDelete("del-job", `job ${s(j.job_number)}`, `/jobs/${id}/delete`)}
     ${formDialog("upload", "Upload plan files", `/jobs/${id}/files`, `<label class="fld full"><span>Plan files</span><input type="file" name="files" multiple required accept="application/pdf,image/jpeg,image/png,image/webp,image/gif"><small>PDF, JPEG or PNG, up to 30 MB each.</small></label>`, "Upload", "multipart/form-data")}
     ${formDialog("new-item", "Add checklist item", `/jobs/${id}/items`, itemFields({ kind: "plant" }, kinds), "Add")}
@@ -332,11 +332,11 @@ function itemFields(i: Row, kinds: [string, string][]): string {
 }
 
 function invoiceFromJobFields(j: Row, st: Record<string, string>): string {
-  const desc = [`Presentation drawing ${s(j.job_number)}`, s(j.project), s(j.site_address)].filter(Boolean).join(", ") + (j.tier_name ? ` (${s(j.tier_name)})` : "");
+  const desc = fillTemplate(st.invoice_line_template, { job: s(j.job_number), project: s(j.project), address: s(j.site_address), client: s(j.client_name), size: s(j.tier_name) }, true) || `Drawing ${s(j.job_number)}`;
   return `${field("description", "Line description", desc, { full: true })}
     ${field("amount", "Amount (AUD, before GST)", n(j.tier_price) ? (n(j.tier_price) / 100).toFixed(2) : "", { required: true, attrs: 'inputmode="decimal" placeholder="0.00"', hint: j.tier_name ? `From the ${esc(j.tier_name)} size price.` : "Set the job size to fill this in." })}
-    ${field("issued_on", "Invoice date", todayBrisbane(), { type: "date" })}
-    <div class="full">${toggle("add_gst", "Add GST (10%)", st.gst_on_invoices === "1", gstHint(st))}</div>
+    ${field("issued_on", "Invoice date", todayIn(st.timezone), { type: "date" })}
+    <div class="full">${toggle("add_gst", `Add GST (${percentLabel(Number(st.gst_rate))})`, st.gst_on_invoices === "1", gstHint(st))}</div>
     <p class="small muted full">The invoice gets the next number and is saved as a draft.</p>`;
 }
 
@@ -369,7 +369,7 @@ async function readFile(c: Ctx, fileId: number): Promise<Response> {
   const obj = await getBytes(c.env, s(f.r2_key));
   if (!obj) return redirect(`/jobs/${jobId}`, "The stored file is missing.", true);
   try {
-    const result = await extractPlan(c.env.ANTHROPIC_API_KEY, { mime: s(f.mime), bytes: obj.bytes }, s(f.filename));
+    const result = await extractPlan(c.env.ANTHROPIC_API_KEY, { mime: s(f.mime), bytes: obj.bytes }, s(f.filename), undefined, c.st.plan_reading_instructions);
     // Replace this file's earlier Claude items; keep anything Jamie added or already ticked.
     const stmts = [
       c.env.DB.prepare(`UPDATE checklist_items SET deleted_at = datetime('now') WHERE file_id=? AND source='claude' AND done=0 AND deleted_at IS NULL`).bind(fileId),
@@ -413,7 +413,7 @@ async function titleBlockFor(env: Env, id: number): Promise<TitleBlock | null> {
   const st = await settings(env);
   return {
     job_number: s(j.job_number), project: s(j.project), client: s(j.client_name), site_address: s(j.site_address),
-    scale: s(j.scale), date: todayBrisbane(), disclaimer: s(j.client_disclaimer) || st.default_disclaimer || "",
+    scale: s(j.scale), date: todayIn(st.timezone), disclaimer: s(j.client_disclaimer) || st.default_disclaimer || "",
     copyright: s(j.client_copyright), drawn_by: st.drawn_by ?? "",
   };
 }
@@ -425,7 +425,7 @@ async function checklistCsv(c: Ctx, id: number, plantsOnly: boolean): Promise<Re
   if (plantsOnly) {
     const syms = (await symbolsList(c.env)) as unknown as (Symbol & { filename: string | null })[];
     const rows = items.map((i) => {
-      const m = matchSymbol(s(i.label), syms);
+      const m = matchSymbol(s(i.label), syms, { species: c.st.match_species === "1", genus: c.st.match_genus === "1" });
       const sym = m ? syms.find((x) => x.id === m.symbol.id) : undefined;
       return [s(i.label), s(i.detail), s(i.quantity), m ? (m.symbol.code || m.symbol.botanical) : "", m ? m.how : "none", sym?.filename ?? ""];
     });
@@ -543,14 +543,15 @@ async function createInvoiceFromJob(c: Ctx, jobId: number): Promise<Response> {
   const cents = parseDollars(s(f.get("amount")));
   if (cents === null) return redirect(`/jobs/${jobId}`, "Enter the amount as dollars, e.g. 250 or 250.00.", true);
   const st = await settings(c.env);
-  const issued = /^\d{4}-\d{2}-\d{2}$/.test(s(f.get("issued_on"))) ? s(f.get("issued_on")) : todayBrisbane();
+  const issued = /^\d{4}-\d{2}-\d{2}$/.test(s(f.get("issued_on"))) ? s(f.get("issued_on")) : todayIn(c.st.timezone);
   const lines: InvoiceLine[] = [{ description: s(f.get("description")).trim() || `Presentation drawing ${s(j.job_number)}`, qty: 1, unit_cents: cents }];
   const gst = f.get("add_gst") === "1";
-  const t = invoiceTotals(lines, gst);
+  const rate = Number(st.gst_rate);
+  const t = invoiceTotals(lines, gst, rate);
   const num = await nextNumber(c.env, "invoice");
   const row = await c.env.DB.prepare(
-    `INSERT INTO invoices (number, job_id, client_id, issued_on, due_on, lines_json, gst_registered, business_gst_registered, subtotal_cents, gst_cents, total_cents) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
-  ).bind(num, jobId, j.client_id ?? null, issued, addDays(issued, Number(st.payment_terms_days || 14)), JSON.stringify(lines), gst ? 1 : 0, st.gst_registered === "1" ? 1 : 0, t.subtotal_cents, t.gst_cents, t.total_cents).first<{ id: number }>();
+    `INSERT INTO invoices (number, job_id, client_id, issued_on, due_on, lines_json, gst_registered, business_gst_registered, gst_rate, subtotal_cents, gst_cents, total_cents, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+  ).bind(num, jobId, j.client_id ?? null, issued, addDays(issued, Number(st.payment_terms_days || 14)), JSON.stringify(lines), gst ? 1 : 0, st.gst_registered === "1" ? 1 : 0, rate, t.subtotal_cents, t.gst_cents, t.total_cents, st.invoice_default_notes).first<{ id: number }>();
   await c.env.DB.prepare(`UPDATE jobs SET status='invoiced' WHERE id=? AND status <> 'done'`).bind(jobId).run();
   return redirect(`/invoices/${row!.id}`, `Invoice ${num} created as a draft.`);
 }
@@ -560,7 +561,7 @@ async function invoicesPage(c: Ctx): Promise<Response> {
     `SELECT i.*, c.name AS client_name, j.job_number FROM invoices i LEFT JOIN clients c ON c.id=i.client_id LEFT JOIN jobs j ON j.id=i.job_id
       WHERE i.deleted_at IS NULL ORDER BY i.id DESC`,
   ).all<Row>();
-  const today = todayBrisbane();
+  const today = todayIn(c.st.timezone);
   const owing = results.filter((i) => i.status !== "paid").reduce((a, i) => a + n(i.total_cents), 0);
   const rows = results.map((i) => [
     `<a href="/invoices/${i.id}"><b>${esc(i.number)}</b></a>`,
@@ -600,7 +601,7 @@ async function invoicePage(c: Ctx, id: number): Promise<Response> {
     <section class="meta"><div><div class="muted small">Bill to</div><b>${esc(i.client_name) || "—"}</b>${i.client_contact ? `<div>${esc(i.client_contact)}</div>` : ""}${i.client_address ? `<div class="pre">${esc(i.client_address)}</div>` : ""}${i.client_email ? `<div>${esc(i.client_email)}</div>` : ""}</div>
       <dl><dt>Invoice date</dt><dd>${esc(i.issued_on)}</dd><dt>Due date</dt><dd>${esc(i.due_on)}</dd>${i.job_number ? `<dt>Job</dt><dd>${esc(i.job_number)}</dd>` : ""}</dl></section>
     <table class="lines"><thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead><tbody>${lineRows}</tbody></table>
-    <dl class="totals"><dt>Subtotal</dt><dd>${formatDollars(n(i.subtotal_cents))}</dd>${gst ? `<dt>GST (10%)</dt><dd>${formatDollars(n(i.gst_cents))}</dd>` : ""}<dt class="grand">Total${gst ? " (incl. GST)" : ""}</dt><dd class="grand">${formatDollars(n(i.total_cents))}</dd></dl>
+    <dl class="totals"><dt>Subtotal</dt><dd>${formatDollars(n(i.subtotal_cents))}</dd>${gst ? `<dt>GST (${percentLabel(n(i.gst_rate))})</dt><dd>${formatDollars(n(i.gst_cents))}</dd>` : ""}<dt class="grand">Total${gst ? " (incl. GST)" : ""}</dt><dd class="grand">${formatDollars(n(i.total_cents))}</dd></dl>
     ${gst ? "" : `<p class="small muted">No GST has been charged.</p>`}
     ${st.payment_details ? `<section><div class="muted small">Payment details</div><div class="pre">${esc(st.payment_details)}</div></section>` : ""}
     ${i.notes ? `<section><div class="pre">${esc(i.notes)}</div></section>` : ""}
@@ -622,12 +623,12 @@ async function invoicePage(c: Ctx, id: number): Promise<Response> {
     ${formDialog("edit-inv", `Edit ${esc(i.number)}`, `/invoices/${id}`, `${pills("status", "Status", INVOICE_STATUSES, s(i.status))}
       ${field("issued_on", "Invoice date", s(i.issued_on), { type: "date" })}${field("due_on", "Due date", s(i.due_on), { type: "date" })}
       ${area("lines", "Lines", linesText, { rows: 4, hint: "One line each: description | amount | quantity (quantity is optional, default 1)." })}
-      <div class="full">${toggle("add_gst", "Add GST (10%)", gst, gstHint(st, n(i.business_gst_registered) === 1))}</div>
+      <div class="full">${toggle("add_gst", `Add GST (${percentLabel(Number(st.gst_rate))})`, gst, gstHint(st, n(i.business_gst_registered) === 1))}</div>
       ${area("notes", "Notes on the invoice", s(i.notes), { rows: 2 })}`)}
     ${confirmDelete("del-inv", `invoice ${s(i.number)}`, `/invoices/${id}/delete`)}${autoPrint}
     ${dialog("email-inv", `Email ${esc(i.number)}?`, `<form method="post" action="/invoices/${id}/email">
       <p>Sends the invoice to <b>${esc(i.client_email)}</b>${st.email ? `, with replies going to ${esc(st.email)}` : ""}. A draft is marked as sent.</p>
-      ${area("message", "Message (optional)", `Hi ${s(i.client_contact) || s(i.client_name)},\n\nPlease find invoice ${s(i.number)} below.\n\nThanks,\n${st.drawn_by || st.business_name}`, { rows: 5 })}
+      ${area("message", "Message (optional)", fillTemplate(st.invoice_email_message, invoiceMailVars(i, st)), { rows: 6, hint: "The wording comes from Settings → Emails." })}
       <div class="btns"><button type="button" class="btn" data-close>Cancel</button><button class="btn btn-primary">Send</button></div></form>`)}`;
   return layout({ title: `Invoice ${s(i.number)}`, path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
@@ -646,11 +647,21 @@ function invoiceEmailHtml(i: Row, st: Record<string, string>, lines: InvoiceLine
   <table width="100%" style="border-collapse:collapse;margin:16px 0"><tr style="background:#f3f5f0"><th ${td} align="left">Description</th><th ${tdr}>Qty</th><th ${tdr}>Unit price</th><th ${tdr}>Amount</th></tr>
   ${lines.map((l) => `<tr><td ${td}>${esc(l.description)}</td><td ${tdr}>${l.qty}</td><td ${tdr}>${formatDollars(l.unit_cents)}</td><td ${tdr}>${formatDollars(Math.round(l.qty * l.unit_cents))}</td></tr>`).join("")}</table>
   <table style="margin-left:auto;border-collapse:collapse"><tr><td style="padding:2px 12px;color:#5f6b5c">Subtotal</td><td style="text-align:right">${formatDollars(n(i.subtotal_cents))}</td></tr>
-  ${gst ? `<tr><td style="padding:2px 12px;color:#5f6b5c">GST (10%)</td><td style="text-align:right">${formatDollars(n(i.gst_cents))}</td></tr>` : ""}
+  ${gst ? `<tr><td style="padding:2px 12px;color:#5f6b5c">GST (${percentLabel(n(i.gst_rate))})</td><td style="text-align:right">${formatDollars(n(i.gst_cents))}</td></tr>` : ""}
   <tr><td style="padding:6px 12px;font-weight:700">Total${gst ? " (incl. GST)" : ""}</td><td style="text-align:right;font-weight:700;font-size:18px">${formatDollars(n(i.total_cents))}</td></tr></table>
   ${gst ? "" : `<p style="color:#5f6b5c;font-size:13px">No GST has been charged.</p>`}
   ${st.payment_details ? `<p><span style="color:#5f6b5c">Payment details</span><br><span style="white-space:pre-line">${esc(st.payment_details)}</span></p>` : ""}
   ${i.notes ? `<p style="white-space:pre-line">${esc(i.notes)}</p>` : ""}</div>`;
+}
+
+/** Values for the {placeholders} in the invoice email wording (Settings → Emails). */
+function invoiceMailVars(i: Row, st: Record<string, string>): Record<string, string> {
+  const taxInvoice = n(i.gst_registered) === 1 && n(i.business_gst_registered) === 1;
+  return {
+    type: taxInvoice ? "Tax invoice" : "Invoice", number: s(i.number), business: st.business_name,
+    client: s(i.client_name), contact: s(i.client_contact) || s(i.client_name) || "there",
+    total: formatDollars(n(i.total_cents)), due: s(i.due_on), signature: st.drawn_by || st.business_name,
+  };
 }
 
 async function emailInvoice(c: Ctx, id: number): Promise<Response> {
@@ -669,7 +680,8 @@ async function emailInvoice(c: Ctx, id: number): Promise<Response> {
   const taxInvoice = gst && n(i.business_gst_registered) === 1;
   const sent = await sendMail(c.env, {
     to: s(i.client_email), replyTo: st.email || undefined,
-    subject: `${taxInvoice ? "Tax invoice" : "Invoice"} ${s(i.number)} from ${st.business_name}`,
+    subject: fillTemplate(st.invoice_email_subject, invoiceMailVars(i, st)).slice(0, 200),
+    fromName: (st.email_sender_name || st.business_name).slice(0, 80),
     text: `${message ? message + "\n\n" : ""}${taxInvoice ? "Tax invoice" : "Invoice"} ${s(i.number)}\nIssued ${s(i.issued_on)}, due ${s(i.due_on)}\n\n${lines.map((l) => `${l.description}: ${formatDollars(Math.round(l.qty * l.unit_cents))}`).join("\n")}\n\nTotal${gst ? " (incl. GST)" : ""}: ${formatDollars(n(i.total_cents))}\n${st.payment_details ? `\nPayment details:\n${st.payment_details}\n` : ""}`,
     html: invoiceEmailHtml(i, st, lines, message),
   });
@@ -698,18 +710,17 @@ async function updateInvoice(c: Ctx, id: number): Promise<Response> {
   const lines = parseLines(s(f.get("lines")));
   if (!lines) return redirect(`/invoices/${id}`, "Each line needs a description and an amount, like: Drawing | 250.00", true);
   const addGst = f.get("add_gst") === "1";
-  const t = invoiceTotals(lines, addGst);
+  const rate = Number(c.st.gst_rate);
+  const t = invoiceTotals(lines, addGst, rate);
   const status = INVOICE_STATUSES.some(([k]) => k === s(f.get("status"))) ? s(f.get("status")) : "draft";
   const date = (k: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s(f.get(k))) ? s(f.get(k)) : null);
   await c.env.DB.prepare(
-    `UPDATE invoices SET status=?, issued_on=COALESCE(?, issued_on), due_on=COALESCE(?, due_on), lines_json=?, gst_registered=?, subtotal_cents=?, gst_cents=?, total_cents=?, notes=? WHERE id=?`,
-  ).bind(status, date("issued_on"), date("due_on"), JSON.stringify(lines), addGst ? 1 : 0, t.subtotal_cents, t.gst_cents, t.total_cents, s(f.get("notes")).trim(), id).run();
+    `UPDATE invoices SET status=?, issued_on=COALESCE(?, issued_on), due_on=COALESCE(?, due_on), lines_json=?, gst_registered=?, gst_rate=?, subtotal_cents=?, gst_cents=?, total_cents=?, notes=? WHERE id=?`,
+  ).bind(status, date("issued_on"), date("due_on"), JSON.stringify(lines), addGst ? 1 : 0, rate, t.subtotal_cents, t.gst_cents, t.total_cents, s(f.get("notes")).trim(), id).run();
   return redirect(`/invoices/${id}`, "Invoice saved.");
 }
 
 // ---------- Settings ----------
-
-const SETTING_FIELDS = ["business_name", "abn", "email", "phone", "address", "payment_terms_days", "payment_details", "drawn_by", "default_disclaimer", "job_prefix", "invoice_prefix"];
 
 async function settingsPage(c: Ctx): Promise<Response> {
   const [st, tiers] = await Promise.all([settings(c.env), tiersList(c.env)]);
@@ -737,29 +748,14 @@ async function settingsPage(c: Ctx): Promise<Response> {
       `<b>${esc(k.name)}</b>`, String(k.jobs), k.jobs ? formatMinutes(k.avg) : "—", k.jobs ? formatMinutes(k.min) : "—", k.jobs ? formatMinutes(k.max) : "—",
       k.jobs && k.price ? `${formatDollars(Math.round(k.price / (k.avg / 60)))}/h` : '<span class="muted">—</span>',
     ]), "No sizes yet.")}
-    <h2>Business and invoices</h2>
+    <h2>Your logo</h2>
     <div class="panel bar" style="margin-bottom:12px">${st.business_logo_key ? `<img class="thumb" src="/settings/logo" alt="" style="width:auto;max-width:120px;height:40px">` : ""}
-      <span class="grow"><b>Your logo</b><br><span class="small muted">${st.business_logo_key ? "Shown at the top of your invoices." : "Add your logo to show it at the top of your invoices."}</span></span>
+      <span class="grow"><span class="small muted">${st.business_logo_key ? "Shown at the top of your invoices." : "Add your logo to show it at the top of your invoices."}</span></span>
       ${iconBtn({ icon: "upload", label: st.business_logo_key ? "Replace your logo" : "Upload your logo", dialog: "biz-logo" })}
       ${st.business_logo_key ? iconBtn({ icon: "bin", label: "Remove your logo", dialog: "del-biz-logo", danger: true }) : ""}</div>
+    ${settingsForm(st, nextJob, nextInv)}
     ${formDialog("biz-logo", "Your logo", "/settings/logo", `<label class="fld full"><span>Logo image</span><input type="file" name="logo" required accept="image/svg+xml,image/png,image/jpeg,image/webp"><small>PNG, SVG, JPEG or WebP, up to 1 MB.</small></label>`, "Upload", "multipart/form-data")}
     ${confirmDelete("del-biz-logo", "your logo", "/settings/logo/delete")}
-    <form method="post" action="/settings" class="panel"><div class="grid">
-      ${field("business_name", "Business name", st.business_name, { required: true })}${field("abn", "ABN", st.abn, { attrs: 'inputmode="numeric"' })}
-      ${field("email", "Email", st.email, { type: "email" })}${field("phone", "Phone", st.phone)}
-      ${area("address", "Business address", st.address, { rows: 2 })}
-      <div class="full">${toggle("gst_registered", "Registered for GST", st.gst_registered === "1", "Your business is registered for GST. Invoices that add GST are then titled Tax invoice.")}</div>
-      <div class="full">${toggle("gst_on_invoices", "Add GST to invoices", st.gst_on_invoices === "1", "Adds 10% GST on top of the price on new invoices, separately from the setting above. You can still switch GST on or off for each invoice. Existing invoices don't change.")}
-        ${st.gst_on_invoices === "1" && st.gst_registered !== "1" ? `<p class="flash err small" style="margin-top:8px">GST is being added but the business isn't marked as registered for GST. In Australia only GST-registered businesses may charge GST.</p>` : ""}</div>
-      ${field("payment_terms_days", "Payment terms (days)", st.payment_terms_days, { type: "number", attrs: 'min="0" max="120"' })}
-      ${field("drawn_by", "Drawn by (title block)", st.drawn_by)}
-      ${area("payment_details", "Payment details", st.payment_details, { rows: 3, hint: "Bank name, BSB and account number, printed on every invoice." })}
-      ${area("default_disclaimer", "Default disclaimer", st.default_disclaimer, { rows: 2, hint: "Used on title blocks when the client has no disclaimer of their own." })}
-      ${field("job_prefix", "Job number prefix", st.job_prefix, { hint: `Next job: <b>${esc(nextJob)}</b>` })}
-      ${field("job_next", "Next job number", st.job_next, { type: "number", attrs: 'min="1"' })}
-      ${field("invoice_prefix", "Invoice number prefix", st.invoice_prefix, { hint: `Next invoice: <b>${esc(nextInv)}</b>` })}
-      ${field("invoice_last", "Carry on from your last invoice", "", { hint: "Type your last paper invoice number (e.g. INV-0042) and the next one becomes INV-0043. Leave blank to keep the current series." })}
-    </div><div class="btns"><button class="btn btn-primary">Save settings</button></div></form>
     ${formDialog("new-tier", "Add a size", "/tiers", tierFields({}), "Add")}${tierDlgs}`;
   return layout({ title: "Settings", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
@@ -768,22 +764,53 @@ const tierFields = (t: Row) => `${field("name", "Size name", s(t.name), { requir
   ${field("price", "Price (AUD, before GST)", n(t.price_cents) ? (n(t.price_cents) / 100).toFixed(2) : "", { attrs: 'inputmode="decimal" placeholder="0.00"' })}
   ${area("description", "What it covers", s(t.description), { rows: 2 })}${field("sort", "Order", s(t.sort ?? 0), { type: "number" })}`;
 
+/** The Settings form, built from the list in src/settings.ts, one panel per section. */
+function settingsForm(st: Record<string, string>, nextJob: string, nextInv: string): string {
+  const input = (d: SettingDef) => {
+    const v = st[d.key] ?? d.default;
+    const ml = d.maxLength ? ` maxlength="${d.maxLength}"` : "";
+    if (d.type === "toggle") return `<div class="full">${toggle(d.key, esc(d.label), v === "1", d.hint ? esc(d.hint) : "")}</div>`;
+    if (d.type === "area") return area(d.key, esc(d.label), v, { rows: d.key.includes("message") ? 6 : 3, hint: d.hint ? esc(d.hint) : undefined });
+    if (d.type === "select") return `<div class="fld${d.full ? " full" : ""}">${select(d.key, esc(d.label), d.options ?? [], v)}${d.hint ? `<small>${esc(d.hint)}</small>` : ""}</div>`;
+    const num = d.type === "number" ? ` min="${d.min ?? ""}" max="${d.max ?? ""}" step="${d.step ?? "any"}"` : "";
+    let hint = d.hint ? esc(d.hint) : "";
+    if (d.key === "job_prefix" || d.key === "job_pad") hint = `${hint}${hint ? " " : ""}Next job: <b>${esc(nextJob)}</b>`;
+    if (d.key === "invoice_prefix" || d.key === "invoice_pad") hint = `${hint}${hint ? " " : ""}Next invoice: <b>${esc(nextInv)}</b>`;
+    return field(d.key, esc(d.label), v, { type: d.type === "number" ? "number" : d.type === "email" ? "email" : "text", full: d.full, hint: hint || undefined, attrs: `${num}${ml}` });
+  };
+  const extra: Partial<Record<SectionId, string>> = {
+    invoices: st.gst_on_invoices === "1" && st.gst_registered !== "1"
+      ? `<p class="flash err small full">GST is being added but the business isn't marked as registered for GST. In Australia only GST-registered businesses may charge GST.</p>` : "",
+    numbering: `${field("job_next", "Next job number", st.job_next, { type: "number", attrs: 'min="1" step="1"' })}
+      ${field("invoice_last", "Carry on from your last invoice", "", { hint: "Type your last paper invoice number (e.g. INV-0042) and the next one becomes INV-0043. Leave blank to keep the current series." })}`,
+  };
+  const nav = SECTIONS.map(([id, title]) => `<a href="#set-${id}">${esc(title)}</a>`).join("");
+  const panels = SECTIONS.map(([id, title, sub]) => `<section class="panel set-section" id="set-${id}"><h3>${esc(title)}</h3>${sub ? `<p class="sub small">${esc(sub)}</p>` : ""}
+    <div class="grid">${SETTINGS.filter((d) => d.section === id).map(input).join("")}${extra[id] ?? ""}</div></section>`).join("");
+  return `<h2>Your settings</h2><nav class="set-nav" aria-label="Settings sections">${nav}</nav>
+    <form method="post" action="/settings" class="set-form">${panels}
+    <div class="btns sticky-save"><button class="btn btn-primary">Save settings</button></div></form>`;
+}
+
 async function saveSettings(c: Ctx): Promise<Response> {
   const f = await c.req.formData();
-  const stmts = SETTING_FIELDS.map((k) => c.env.DB.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(k, s(f.get(k)).trim()));
-  stmts.push(c.env.DB.prepare(`UPDATE settings SET value=? WHERE key='gst_registered'`).bind(f.get("gst_registered") === "1" ? "1" : "0"));
-  stmts.push(c.env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('gst_on_invoices', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(f.get("gst_on_invoices") === "1" ? "1" : "0"));
+  const stmts: D1PreparedStatement[] = [];
+  const errors: string[] = [];
+  for (const d of SETTINGS) {
+    const r = parseSetting(d, f.get(d.key));
+    if ("error" in r) { errors.push(r.error); continue; }
+    stmts.push(c.env.DB.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(d.key, r.value));
+  }
+  if (errors.length) return redirect("/settings", errors.join(" "), true);
   const jobNext = Number(s(f.get("job_next")));
-  if (Number.isInteger(jobNext) && jobNext > 0) stmts.push(c.env.DB.prepare(`UPDATE settings SET value=? WHERE key='job_next'`).bind(String(jobNext)));
+  if (Number.isInteger(jobNext) && jobNext > 0) stmts.push(c.env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('job_next', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(String(jobNext)));
   const last = s(f.get("invoice_last")).trim();
   if (last) {
     const cont = continueFrom(last);
     if (!cont) return redirect("/settings", `"${last}" has no number at the end to carry on from.`, true);
-    stmts.push(
-      c.env.DB.prepare(`UPDATE settings SET value=? WHERE key='invoice_prefix'`).bind(cont.prefix),
-      c.env.DB.prepare(`UPDATE settings SET value=? WHERE key='invoice_next'`).bind(String(cont.next)),
-      c.env.DB.prepare(`UPDATE settings SET value=? WHERE key='invoice_pad'`).bind(String(cont.pad)),
-    );
+    for (const [k, v] of [["invoice_prefix", cont.prefix], ["invoice_next", String(cont.next)], ["invoice_pad", String(cont.pad)]]) {
+      stmts.push(c.env.DB.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(k, v));
+    }
   }
   await c.env.DB.batch(stmts);
   return redirect("/settings", "Settings saved.");
@@ -812,7 +839,7 @@ function gstHint(st: Record<string, string>, registeredAtTheTime = st.gst_regist
 
 async function gettingStarted(c: Ctx): Promise<string> {
   const st = await settings(c.env);
-  if (st.onboarding_hidden === "1") return "";
+  if (st.show_onboarding !== "1") return "";
   const one = async (sql: string) => n((await c.env.DB.prepare(sql).first<{ n: number }>())?.n);
   const signIn = await c.env.DB.prepare(`SELECT (password_hash IS NOT NULL) + (SELECT COUNT(*) FROM passkeys WHERE user_id=users.id) AS n FROM users WHERE id=?`).bind(c.user.id).first<{ n: number }>();
   const steps: [boolean, string, string][] = [
@@ -826,7 +853,7 @@ async function gettingStarted(c: Ctx): Promise<string> {
   const left = steps.filter(([done]) => !done).length;
   if (!left) return "";
   return `<section class="panel onboard" aria-label="Getting started"><div class="bar"><b class="grow">Getting started · ${steps.length - left} of ${steps.length} done</b>
-    <form method="post" action="/settings/onboarding/hide" class="inline">${iconBtn({ icon: "x", label: "Hide this checklist" })}</form></div>
+    <form method="post" action="/settings/onboarding/hide" class="inline">${iconBtn({ icon: "x", label: "Hide this checklist (bring it back in Settings)" })}</form></div>
     <ol>${steps.map(([done, text, href]) => `<li class="${done ? "done" : ""}">${done ? icon("check") : `<span class="todo-dot" aria-hidden="true"></span>`}${done ? `<span>${esc(text)}</span>` : `<a href="${href}">${esc(text)}</a>`}</li>`).join("")}</ol></section>`;
 }
 
@@ -857,7 +884,7 @@ async function timeRoute(c: Ctx, jobId: number, action: string): Promise<Respons
   const f = await c.req.formData();
   const mins = parseDuration(s(f.get("duration")));
   if (mins === null) return redirect(`/jobs/${jobId}`, "Enter the time like 90, 1:30 or 1.5h (up to 24 hours).", true);
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(s(f.get("date"))) ? s(f.get("date")) : todayBrisbane();
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(s(f.get("date"))) ? s(f.get("date")) : todayIn(c.st.timezone);
   const start = `${date} 00:00:00`;
   await c.env.DB.prepare(`INSERT INTO time_entries (job_id, user_id, started_at, ended_at, minutes, note) VALUES (?,?,?,?,?,?)`).bind(jobId, c.user.id, start, start, mins, s(f.get("note")).trim().slice(0, 200)).run();
   return redirect(`/jobs/${jobId}`, `Added ${formatMinutes(mins)}.`);
@@ -889,7 +916,7 @@ async function exportData(c: Ctx): Promise<Response> {
   for (const t of tables) out[t] = (await c.env.DB.prepare(`SELECT * FROM ${t}`).all()).results;
   // Accounts without any secrets (no password hashes, sessions, passkeys or tokens).
   out.users = (await c.env.DB.prepare(`SELECT id, email, name, role, created_at, last_login_at, deleted_at FROM users`).all()).results;
-  return download(JSON.stringify(out, null, 2), `sprigboard-export-${todayBrisbane()}.json`, "application/json; charset=utf-8");
+  return download(JSON.stringify(out, null, 2), `sprigboard-export-${todayIn(c.st.timezone)}.json`, "application/json; charset=utf-8");
 }
 
 // ---------- Router ----------
@@ -1029,7 +1056,7 @@ export async function route(c: Ctx): Promise<Response> {
       return redirect("/settings", "Logo removed.");
     }
     if (p === "/settings/onboarding/hide") {
-      await env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('onboarding_hidden','1') ON CONFLICT(key) DO UPDATE SET value='1'`).run();
+      await env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('show_onboarding','0') ON CONFLICT(key) DO UPDATE SET value='0'`).run();
       return redirect("/");
     }
     if (p === "/tiers") return saveTier(c, null);
@@ -1054,7 +1081,7 @@ export default {
         return new Response(null, { status: 303, headers: { location: `/login${next}` } });
       }
       try {
-        return await route({ env, req, url, user });
+        return await route({ env, req, url, user, st: await settings(env) });
       } catch (e) {
         if (e instanceof StorageError) {
           // Back to the page the form was on (same site only).

@@ -93,6 +93,12 @@ describe("extractPlan (fake API)", () => {
     expect(c.body.thinking).toBeUndefined();
   });
 
+  it("passes the designer's extra instructions", async () => {
+    const { f, calls } = fakeClaude(answer);
+    await extractPlan("sk-test", pdf, "plan.pdf", f, "Ignore irrigation notes.");
+    expect(calls[0].body.messages[0].content[1].text).toContain("Ignore irrigation notes.");
+  });
+
   it("reports a refusal plainly and still deletes the upload", async () => {
     const { f, deleted } = fakeClaude("", "refusal");
     await expect(extractPlan("sk-test", pdf, "plan.pdf", f)).rejects.toBeInstanceOf(ExtractionError);

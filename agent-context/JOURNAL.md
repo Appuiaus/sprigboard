@@ -2,6 +2,26 @@
 
 Curated, newest first: what each session did and why, with gotchas for the next session.
 
+## 2026-11-07 (night): everything adjustable is a setting
+
+- **Pedro:** "Use settings for anything that makes sense … so Jamie does not have to ask me to change code."
+  New `src/settings.ts`: a single list (`SETTINGS`) drives the Settings page (seven sections with a jump bar),
+  validation (`parseSetting`), defaults (`withDefaults`, so new settings need no migration) and saving.
+- **Now settings:**
+  - GST rate (stored on each invoice as `invoices.gst_rate`, migration 0006);
+  - invoice line wording, default invoice notes, and invoice email subject and message templates
+    (`fillTemplate` with {placeholders}; empty ones are tidied away);
+  - email sender name (Mailjet From name; the address stays `MAIL_FROM`);
+  - job and invoice number digits;
+  - job status names (`jobStatuses(st)`);
+  - extra plan-reading instructions (sent to Claude after the plan);
+  - species and genus matching switches;
+  - time zone (`todayIn`, `localTime`);
+  - the getting-started checklist (`show_onboarding`, which replaces `onboarding_hidden`).
+- `Ctx` now carries `st` (settings loaded once per request).
+- **Rule added to CLAUDE.md:** "Settings over code".
+- **Gotcha:** forms can't nest, so the logo upload and delete dialogs sit outside the settings form.
+
 ## 2026-11-07 (evening): GST split into two settings plus a per-invoice switch
 
 - **Pedro:** the setting for adding GST to invoices must be independent of whether GST is "enabled". The two are now:

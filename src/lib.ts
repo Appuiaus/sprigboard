@@ -42,9 +42,10 @@ export function formatDollars(cents: number): string {
 
 export interface InvoiceLine { description: string; qty: number; unit_cents: number }
 
-export function invoiceTotals(lines: InvoiceLine[], gstRegistered: boolean) {
+/** addGst: whether this invoice adds GST; ratePercent: e.g. 10 for 10%. */
+export function invoiceTotals(lines: InvoiceLine[], addGst: boolean, ratePercent = GST_RATE * 100) {
   const subtotal = lines.reduce((s, l) => s + Math.round(l.qty * l.unit_cents), 0);
-  const gst = gstRegistered ? Math.round(subtotal * GST_RATE) : 0;
+  const gst = addGst ? Math.round((subtotal * ratePercent) / 100) : 0;
   return { subtotal_cents: subtotal, gst_cents: gst, total_cents: subtotal + gst };
 }
 
@@ -55,10 +56,18 @@ export function addDays(isoDate: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** Today's date in Brisbane (Jamie's time zone), as YYYY-MM-DD. */
-export function todayBrisbane(now = new Date()): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Brisbane" }).format(now);
+export const DEFAULT_TZ = "Australia/Brisbane";
+
+/** Today's date in a time zone (Jamie's, from Settings), as YYYY-MM-DD. */
+export function todayIn(tz = DEFAULT_TZ, now = new Date()): string {
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(now); }
+  catch { return new Intl.DateTimeFormat("en-CA", { timeZone: DEFAULT_TZ }).format(now); }
 }
+/** @deprecated use todayIn(st.timezone) */
+export const todayBrisbane = (now = new Date()) => todayIn(DEFAULT_TZ, now);
+
+/** "10" → "10", "12.5" → "12.5" for labels like "GST (10%)". */
+export const percentLabel = (rate: number) => `${Math.round(rate * 100) / 100}%`;
 
 // ---------- CSV ----------
 
@@ -139,17 +148,18 @@ export function normalisePlant(s: string): string {
  * botanical name, then genus only. Returns how it matched so Jamie can see
  * weaker matches.
  */
-export function matchSymbol(label: string, symbols: Symbol[]): { symbol: Symbol; how: "code" | "exact" | "species" | "genus" } | null {
+export function matchSymbol(label: string, symbols: Symbol[], opts: { species?: boolean; genus?: boolean } = {}): { symbol: Symbol; how: "code" | "exact" | "species" | "genus" } | null {
+  const allowSpecies = opts.species ?? true, allowGenus = opts.genus ?? true;
   const n = normalisePlant(label);
   if (!n) return null;
   const words = n.split(" ");
   for (const s of symbols) if (s.code && normalisePlant(s.code) === n) return { symbol: s, how: "code" };
   for (const s of symbols) if (normalisePlant(s.botanical) === n || (s.common && normalisePlant(s.common) === n)) return { symbol: s, how: "exact" };
-  if (words.length >= 2) {
+  if (allowSpecies && words.length >= 2) {
     const sp = words.slice(0, 2).join(" ");
     for (const s of symbols) if (normalisePlant(s.botanical).split(" ").slice(0, 2).join(" ") === sp) return { symbol: s, how: "species" };
   }
-  for (const s of symbols) {
+  if (allowGenus) for (const s of symbols) {
     const genus = normalisePlant(s.botanical).split(" ")[0];
     if (genus && genus === words[0] && genus.length > 2) return { symbol: s, how: "genus" };
   }
@@ -222,8 +232,11 @@ export function minutesBetween(start: string, end: string): number {
   return Math.max(1, Math.round((b - a) / 60000));
 }
 
-/** A D1 UTC timestamp shown in Brisbane time, e.g. "7 Nov, 2:05 pm". */
-export function brisbaneTime(utc: string): string {
+/** A D1 UTC timestamp in a time zone, e.g. "7 Nov, 2:05 pm". */
+export function localTime(utc: string, tz = DEFAULT_TZ): string {
   const d = new Date(utc.replace(" ", "T") + "Z");
-  return new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Brisbane", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(d);
+  const opts: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" };
+  try { return new Intl.DateTimeFormat("en-AU", { ...opts, timeZone: tz }).format(d); }
+  catch { return new Intl.DateTimeFormat("en-AU", { ...opts, timeZone: DEFAULT_TZ }).format(d); }
 }
+export const brisbaneTime = (utc: string) => localTime(utc, DEFAULT_TZ);

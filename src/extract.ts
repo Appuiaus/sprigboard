@@ -96,7 +96,7 @@ export function parseExtraction(text: string): Extraction {
 
 export class ExtractionError extends Error {}
 
-export async function extractPlan(apiKey: string, src: PlanSource, filename: string, fetchImpl?: typeof fetch): Promise<Extraction> {
+export async function extractPlan(apiKey: string, src: PlanSource, filename: string, fetchImpl?: typeof fetch, instructions = ""): Promise<Extraction> {
   // fetchImpl is for tests only.
   const client = new Anthropic({ apiKey, maxRetries: 2, ...(fetchImpl ? { fetch: fetchImpl, baseURL: "https://api.test" } : {}) });
   if (!isSupportedPlan(src.mime)) throw new ExtractionError("Claude can read PDF, JPEG, PNG, GIF and WebP files.");
@@ -116,7 +116,7 @@ export async function extractPlan(apiKey: string, src: PlanSource, filename: str
         system: SYSTEM,
         messages: [{
           role: "user",
-          content: [planBlock(src.mime, fileId), { type: "text", text: `Plan file: ${filename}. List its contents as described.` }],
+          content: [planBlock(src.mime, fileId), { type: "text", text: `Plan file: ${filename}. List its contents as described.${instructions.trim() ? `\n\nThe designer's own instructions for reading her plans (from her Settings):\n${instructions.trim()}` : ""}` }],
         }],
       })
       .finalMessage();

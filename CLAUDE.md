@@ -25,6 +25,12 @@ No secrets in either.
 - **Claude API:** model `claude-opus-5-5`, structured output via `output_config.format`, server-side
   `fallbacks: "default"`. Check the current API docs before changing it.
 - Run `npm test` and `npm run typecheck` before pushing.
+- **Settings over code (owner's rule, 2026-11-07):** anything Jamie might reasonably want to change (wording,
+  rates, numbering, names, defaults, on/off behaviour, time zone) is a setting, never a hard-coded value, so she
+  never has to ask for a code change. Add it as one entry in `src/settings.ts` (`SETTINGS`: label, type, section,
+  default, hint, limits). The Settings page, validation, defaults and saving all follow from that entry. Read it
+  as `c.st.<key>`. Don't add a migration for a new setting; the default covers it. When building any feature,
+  ask what a user would want to adjust, and make that a setting from the start.
 - **This repo and BidSidekick's (`Appuiaus/bidsidekick`) must be private** (owner's rule, 2026-11-07). If either
   shows as public (check with `gh api -X GET search/repositories -f q='user:Appuiaus'`), tell Pedro straight away.
   Never commit client data, plans or secrets to them either way.

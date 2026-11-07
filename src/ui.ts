@@ -174,6 +174,9 @@ tr.done td:not(.actions){color:var(--muted)}tr.done .lbl{text-decoration:line-th
 button.passkey{gap:8px;font-weight:600;border-color:var(--accent);color:var(--accent)}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;margin:16px 0 8px}.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
 #passkey-msg,#passkey-add-msg{margin-top:8px}.grow{margin-right:auto}
+.set-nav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}.set-nav a{padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:var(--card);text-decoration:none;font-size:13px}.set-nav a:hover{border-color:var(--accent)}
+.set-section{margin-bottom:12px;scroll-margin-top:72px}.set-section h3{margin:0 0 2px;font-size:16px}
+.sticky-save{position:sticky;bottom:0;padding:10px 0;background:linear-gradient(transparent,var(--bg) 40%);margin-top:0}
 .onboard{margin:4px 0 16px;border-left:4px solid var(--accent)}.onboard ol{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:6px 16px}
 .onboard li{display:flex;align-items:center;gap:8px}.onboard li.done{color:var(--muted);text-decoration:line-through}.onboard li .ic{color:var(--ok)}
 .todo-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--accent);flex:none;margin:2px}
