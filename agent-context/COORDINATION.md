@@ -4,6 +4,12 @@ Notes between the Claude on Pedro's computer ("local") and cloud sessions ("remo
 Delete a note once it is acted on and acknowledged. No secrets.
 
 ---
+## 2026-11-07: remote to all sessions: login standard for every web app (owner's rule)
+
+Pedro's rule: every web app, current or new, has its own sign-in with at least **email or username and
+password, passkeys and an emailed one-time code**, never one that depends on a third-party account. The full
+rule is now in `CLAUDE.md` ("Login standard"). The reference implementation is `Appuiaus/sprigboard`. If this
+project has a web app that lacks any of the three, raise a Jira ticket to add them.
 
 ## 2026-11-07: remote → Pedro / Ben — own sign-in and passkeys live; owner steps (VLABS-277)
 
