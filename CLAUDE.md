@@ -25,6 +25,10 @@ No secrets in either.
 - **Claude API:** model `claude-opus-5-5`, structured output via `output_config.format`, server-side
   `fallbacks: "default"`. Check the current API docs before changing it.
 - Run `npm test` and `npm run typecheck` before pushing.
+- **Always ship (owner's rule, 2026-11-07):** "Always deploy, develop, merge, push, keep going." Don't stop to
+  ask before committing, pushing, merging or deploying Sprigboard. Once tests pass and the screenshots are checked,
+  ship it, then pick up the next useful task. Still stop for things only Pedro or Ben can do (secrets, repo
+  settings, enabling R2), and before anything that spends money or deletes real data.
 - **Settings over code (owner's rule, 2026-11-07):** anything Jamie might reasonably want to change (wording,
   rates, numbering, names, defaults, on/off behaviour, time zone) is a setting, never a hard-coded value, so she
   never has to ask for a code change. Add it as one entry in `src/settings.ts` (`SETTINGS`: label, type, section,
