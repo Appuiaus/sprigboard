@@ -29,6 +29,9 @@ const ICONS: Record<string, string> = {
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
+  play: '<path d="M7 4v16l13-8z"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   power: '<path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.8 0"/>',
 };
 
@@ -171,6 +174,10 @@ tr.done td:not(.actions){color:var(--muted)}tr.done .lbl{text-decoration:line-th
 button.passkey{gap:8px;font-weight:600;border-color:var(--accent);color:var(--accent)}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;margin:16px 0 8px}.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
 #passkey-msg,#passkey-add-msg{margin-top:8px}.grow{margin-right:auto}
+.onboard{margin:4px 0 16px;border-left:4px solid var(--accent)}.onboard ol{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:6px 16px}
+.onboard li{display:flex;align-items:center;gap:8px}.onboard li.done{color:var(--muted);text-decoration:line-through}.onboard li .ic{color:var(--ok)}
+.todo-dot{width:14px;height:14px;border-radius:50%;border:2px solid var(--accent);flex:none;margin:2px}
+.timer{display:inline-flex;align-items:center;gap:8px;color:var(--accent);font-weight:600}.timer .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 1.6s infinite}@keyframes pulse{50%{opacity:.25}}
 .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:8px 0 16px}
 .stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;text-decoration:none;display:flex;flex-direction:column}
 .stat b{font-size:22px;font-variant-numeric:tabular-nums}.stat span{color:var(--muted);font-size:13px}.stat:hover{border-color:var(--accent)}
@@ -182,7 +189,7 @@ input.code{font-size:24px;letter-spacing:8px;text-align:center;font-variant-nume
  .top .who span{display:none}#burger{display:inline-flex}
  nav.main{display:none;position:absolute;left:0;right:0;top:100%;flex-direction:column;background:var(--bg);border-bottom:1px solid var(--line);padding:8px 16px;margin:0}
  nav.main.open{display:flex}
- .grid{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}.filters .fld{flex:1 1 100%}
+ .grid{grid-template-columns:1fr}.onboard ol{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}.filters .fld{flex:1 1 100%}
  table,thead,tbody,tr,td{display:block}thead{display:none}
  tr{border-bottom:1px solid var(--line);padding:6px 0}tbody tr:last-child{border-bottom:0}
  td{border:0;padding:3px 12px;display:flex;gap:12px;justify-content:space-between;text-align:right}
@@ -223,6 +230,8 @@ const BODY_JS = `
  document.addEventListener("focusin",function(e){var t=e.target.closest("[data-tip]");if(t)show(t);else hide()});
  document.addEventListener("focusout",hide);window.addEventListener("scroll",hide,true);
  document.querySelectorAll("form[data-autosubmit] input[type=checkbox]").forEach(function(c){c.addEventListener("change",function(){c.form.submit()})});
+ function tick(){document.querySelectorAll("[data-since]").forEach(function(el){var m=Math.max(0,Math.round((Date.now()-Date.parse(el.dataset.since.replace(" ","T")+"Z"))/60000)),h=Math.floor(m/60),r=m%60;el.textContent=h?(r?h+" h "+r+" min":h+" h"):r+" min"})}
+ tick();setInterval(tick,30000);
  document.querySelectorAll("form[data-busy]").forEach(function(f){f.addEventListener("submit",function(){var b=f.querySelector("button:not([data-close])");if(b){b.disabled=true;b.setAttribute("aria-busy","true")}var m=document.getElementById(f.dataset.busy);if(m)m.hidden=false})});
 })();`;
 

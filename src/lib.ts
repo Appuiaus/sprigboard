@@ -196,3 +196,34 @@ export function plantRowsFromCsv(text: string): { rows: { botanical: string; com
   });
   return { rows, skipped };
 }
+
+// ---------- Time ----------
+
+/** "90", "90m", "1:30", "1h 30m", "1.5h", "2 h" → minutes. Null when unreadable or over 24 hours. */
+export function parseDuration(input: string): number | null {
+  const t = input.trim().toLowerCase().replace(/\s+/g, " ");
+  let m: RegExpExecArray | null;
+  let minutes: number | null = null;
+  if ((m = /^(\d{1,2}):([0-5]\d)$/.exec(t))) minutes = Number(m[1]) * 60 + Number(m[2]);
+  else if ((m = /^(\d+(?:\.\d+)?) ?h(?:rs?|ours?)?(?: ?(\d{1,2}) ?m(?:ins?|inutes?)?)?$/.exec(t))) minutes = Math.round(Number(m[1]) * 60) + Number(m[2] ?? 0);
+  else if ((m = /^(\d{1,4}) ?(?:m|mins?|minutes?)?$/.exec(t))) minutes = Number(m[1]);
+  return minutes !== null && minutes > 0 && minutes <= 24 * 60 ? minutes : null;
+}
+
+export function formatMinutes(total: number): string {
+  const m = Math.max(0, Math.round(total));
+  const h = Math.floor(m / 60), r = m % 60;
+  return h ? (r ? `${h} h ${r} min` : `${h} h`) : `${r} min`;
+}
+
+/** D1 datetime('now') strings ("YYYY-MM-DD HH:MM:SS", UTC) → minutes between, at least 1. */
+export function minutesBetween(start: string, end: string): number {
+  const a = Date.parse(start.replace(" ", "T") + "Z"), b = Date.parse(end.replace(" ", "T") + "Z");
+  return Math.max(1, Math.round((b - a) / 60000));
+}
+
+/** A D1 UTC timestamp shown in Brisbane time, e.g. "7 Nov, 2:05 pm". */
+export function brisbaneTime(utc: string): string {
+  const d = new Date(utc.replace(" ", "T") + "Z");
+  return new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Brisbane", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" }).format(d);
+}

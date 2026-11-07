@@ -3,11 +3,13 @@
 // export for Illustrator, size-tier pricing and invoices.
 // Sign-in is Sprigboard's own (src/auth.ts): no Cloudflare account needed.
 
-import { accountPage, accountPost, authRoute, currentUser, usersPage, usersPost, type AuthEnv, type User } from "./auth";
+import { accountPage, accountPost, authRoute, currentUser, rateLimit, usersPage, usersPost, type AuthEnv, type User } from "./auth";
 import { passkeyAccountRoute, passkeyLoginRoute } from "./passkeys";
+import { mailEnabled, sendMail } from "./mail";
+import { D1_MAX_BYTES, getBytes, getFile, maxUpload, putFile, sizeLabel, StorageError } from "./storage";
 import { extractPlan, ExtractionError, isSupportedPlan, ITEM_KINDS } from "./extract";
 import {
-  addDays, continueFrom, normalisePlant, plantRowsFromCsv, esc, formatDollars, formatNumber, invoiceTotals, matchSymbol, parseDollars,
+  addDays, brisbaneTime, continueFrom, formatMinutes, minutesBetween, normalisePlant, parseDuration, plantRowsFromCsv, esc, formatDollars, formatNumber, invoiceTotals, matchSymbol, parseDollars,
   titleBlockCsv, titleBlockXml, toCsv, todayBrisbane, type InvoiceLine, type Symbol, type TitleBlock,
 } from "./lib";
 import {
@@ -26,7 +28,6 @@ type Ctx = { env: Env; req: Request; url: URL; user: User };
 const JOB_STATUSES: [string, string][] = [["new", "New"], ["drawing", "Drawing"], ["sent", "Sent to client"], ["invoiced", "Invoiced"], ["done", "Done"]];
 const INVOICE_STATUSES: [string, string][] = [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]];
 const KIND_NAMES: Record<string, string> = { plant: "Plant", street: "Street", dimension: "Dimension", marking: "Marking", note: "Note" };
-const NO_STORAGE = "File storage isn't turned on yet (R2 needs enabling in the Cloudflare account). Everything else works.";
 const MAX_UPLOAD = 30 * 1024 * 1024; // the Claude API takes requests up to 32 MB
 
 // ---------- small helpers ----------
@@ -76,14 +77,13 @@ const symbolsList = (env: Env) =>
 
 const fileKey = (prefix: string, name: string) => `${prefix}/${crypto.randomUUID()}-${name.replace(/[^\w.-]+/g, "_").slice(-80)}`;
 
-async function serveObject(env: Env, key: string | null, filename: string, mime: string): Promise<Response> {
+async function serveObject(env: Env, key: string | null, filename: string, mime?: string): Promise<Response> {
   if (!key) return new Response("Not found", { status: 404 });
-  if (!env.FILES) return new Response(NO_STORAGE, { status: 503 });
-  const obj = await env.FILES.get(key);
+  const obj = await getFile(env, key);
   if (!obj) return new Response("Not found", { status: 404 });
   return new Response(obj.body, {
     headers: {
-      "content-type": mime || "application/octet-stream",
+      "content-type": mime || obj.mime || "application/octet-stream",
       "content-disposition": `inline; filename="${filename.replace(/[^\w.-]+/g, "_")}"`,
       "cache-control": "private, max-age=300",
       "x-content-type-options": "nosniff",
@@ -127,6 +127,7 @@ async function jobsPage(c: Ctx): Promise<Response> {
   const counts = await c.env.DB.prepare(`SELECT status, COUNT(*) AS n FROM jobs WHERE deleted_at IS NULL GROUP BY status`).all<{ status: string; n: number }>();
   const count = (k: string) => counts.results.find((r) => r.status === k)?.n ?? 0;
   const filtered = !!q || !!status;
+  const onboarding = await gettingStarted(c);
   const rows = results.map((j) => [
     `<a href="/jobs/${j.id}"><b>${esc(j.job_number)}</b></a>`,
     `${esc(j.project) || '<span class="muted">No project name</span>'}<div class="muted small">${esc(j.site_address)}</div>`,
@@ -141,6 +142,7 @@ async function jobsPage(c: Ctx): Promise<Response> {
   const body = `<div class="bar"><h1>Jobs</h1>
     ${iconBtn({ icon: "plus", label: "New job", dialog: "new-job", attrs: 'style="width:38px;height:38px"' }).replace('class="ib"', 'class="ib primary"')}</div>
     <p class="sub">Each job gets the next job number. Upload the plan, let Claude read it, then tick items off as you draw.</p>
+    ${onboarding}
     <div class="stats"><a class="stat" href="/?status=new"><b>${count("new")}</b><span>New</span></a><a class="stat" href="/?status=drawing"><b>${count("drawing")}</b><span>Drawing</span></a>
       <a class="stat" href="/?status=sent"><b>${count("sent")}</b><span>Sent to client</span></a><a class="stat" href="/invoices"><b>${formatDollars(owing?.t ?? 0)}</b><span>${owing?.n ?? 0} invoice${owing?.n === 1 ? "" : "s"} unpaid</span></a></div>
     <form class="filters" method="get" action="/" role="search">
@@ -154,8 +156,8 @@ async function jobsPage(c: Ctx): Promise<Response> {
   return layout({ title: "Jobs", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
-function statusBadge(st: string): string {
-  const name = JOB_STATUSES.find(([k]) => k === st)?.[1] ?? INVOICE_STATUSES.find(([k]) => k === st)?.[1] ?? st;
+function statusBadge(st: string, kind: "job" | "invoice" = "job"): string {
+  const name = (kind === "invoice" ? INVOICE_STATUSES : JOB_STATUSES).find(([k]) => k === st)?.[1] ?? st;
   const tone = st === "done" || st === "paid" ? "ok" : st === "new" || st === "draft" ? "muted" : st === "sent" || st === "invoiced" ? "warn" : "";
   return badge(name, tone);
 }
@@ -211,6 +213,9 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
   const files = (await c.env.DB.prepare(`SELECT * FROM plan_files WHERE job_id=? AND deleted_at IS NULL ORDER BY id`).bind(id).all<Row>()).results;
   const items = (await c.env.DB.prepare(`SELECT * FROM checklist_items WHERE job_id=? AND deleted_at IS NULL ORDER BY done, CASE kind WHEN 'plant' THEN 0 WHEN 'street' THEN 1 WHEN 'dimension' THEN 2 WHEN 'marking' THEN 3 ELSE 4 END, sort, id`).bind(id).all<Row>()).results;
   const invoices = (await c.env.DB.prepare(`SELECT * FROM invoices WHERE job_id=? AND deleted_at IS NULL ORDER BY id`).bind(id).all<Row>()).results;
+  const times = (await c.env.DB.prepare(`SELECT t.*, u.name AS user_name, u.email AS user_email FROM time_entries t LEFT JOIN users u ON u.id = t.user_id WHERE t.job_id=? AND t.deleted_at IS NULL ORDER BY t.started_at DESC`).bind(id).all<Row>()).results;
+  const running = times.find((t) => !t.ended_at && n(t.user_id) === c.user.id);
+  const totalMin = times.reduce((a, t) => a + (t.ended_at ? n(t.minutes) : minutesBetween(s(t.started_at), new Date().toISOString().replace("T", " ").slice(0, 19))), 0);
   const syms = symbols as unknown as (Symbol & { r2_key: string | null; mime: string | null })[];
   const hasKey = !!c.env.ANTHROPIC_API_KEY;
 
@@ -262,7 +267,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
   const disclaimer = s(j.client_disclaimer) || st.default_disclaimer || "";
   const copyright = s(j.client_copyright);
   const invRows = invoices.map((iv) => [
-    `<a href="/invoices/${iv.id}">${esc(iv.number)}</a>`, esc(iv.issued_on), `<span class="num">${formatDollars(n(iv.total_cents))}</span>`, statusBadge(s(iv.status)),
+    `<a href="/invoices/${iv.id}">${esc(iv.number)}</a>`, esc(iv.issued_on), `<span class="num">${formatDollars(n(iv.total_cents))}</span>`, statusBadge(s(iv.status), "invoice"),
     iconBtn({ icon: "eye", label: `Open invoice ${s(iv.number)}`, href: `/invoices/${iv.id}` }),
   ]);
 
@@ -285,7 +290,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
         ${iconBtn({ icon: "file", label: "Title block as CSV", href: `/jobs/${id}/title-block.csv`, download: true })}</div>
     </div>
     <div class="bar"><h2>Plans</h2>${iconBtn({ icon: "upload", label: "Upload plan files", dialog: "upload" })}</div>
-    ${c.env.FILES ? "" : `<div class="flash err">${NO_STORAGE}</div>`}
+    ${c.env.FILES ? "" : `<p class="small muted">Plans up to ${sizeLabel(D1_MAX_BYTES)} can be uploaded now; bigger PDFs need R2 storage, which isn't turned on in the Cloudflare account yet.</p>`}
     ${hasKey ? "" : `<div class="flash err">Plan reading is off until the Claude API key is added (see SETUP in the repo). Everything else works.</div>`}
     <div class="flash" id="reading" hidden>Claude is reading the plan. This can take a minute or two for a detailed PDF; keep this page open.</div>
     ${table(["File", "Size", "Read", "Actions"], fileRows, "No plan uploaded yet.")}
@@ -295,6 +300,20 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
       ${items.some((i) => i.kind === "plant") ? iconBtn({ icon: "leaf", label: "Plant list with matched symbols (CSV)", href: `/jobs/${id}/plants.csv`, download: true }) : ""}</div>
     <p class="sub small">Claude drafts this list from the plan. Check each item against the plan as you draw it; you have the final say.</p>
     ${itemTableStyled}
+    <div class="bar"><h2>Time</h2>
+      ${running ? `<span class="timer"><span class="dot" aria-hidden="true"></span>Timing: <span data-since="${esc(running.started_at)}">${formatMinutes(minutesBetween(s(running.started_at), new Date().toISOString().replace("T", " ").slice(0, 19)))}</span></span>
+        <form method="post" action="/jobs/${id}/timer/stop" class="inline">${iconBtn({ icon: "stop", label: "Stop the timer", attrs: 'class="ib primary"' }).replace('class="ib" ', "")}</form>`
+        : `<form method="post" action="/jobs/${id}/timer/start" class="inline">${iconBtn({ icon: "play", label: "Start timing this job" })}</form>`}
+      ${iconBtn({ icon: "clock", label: "Add time by hand", dialog: "add-time" })}</div>
+    <p class="sub small">Time spent so far: <b>${formatMinutes(totalMin)}</b>. You don't charge by the hour; this helps set your size prices (see Settings).</p>
+    ${times.length ? table(["When", "Who", "Time", "Note", "Actions"], times.map((t) => [
+      esc(brisbaneTime(s(t.started_at))), esc(s(t.user_name) || s(t.user_email)),
+      t.ended_at ? formatMinutes(n(t.minutes)) : `<span class="timer"><span class="dot" aria-hidden="true"></span><span data-since="${esc(t.started_at)}">running</span></span>`,
+      esc(t.note),
+      iconBtn({ icon: "bin", label: "Delete this time entry", dialog: `del-time-${t.id}`, danger: true }),
+    ]), "") : ""}
+    ${times.map((t) => confirmDelete(`del-time-${t.id}`, "this time entry", `/time/${t.id}/delete`)).join("")}
+    ${formDialog("add-time", "Add time by hand", `/jobs/${id}/time`, `${field("duration", "Time spent", "", { required: true, hint: "e.g. 90, 1:30 or 1.5h", attrs: 'autocomplete="off"' })}${field("date", "Date", todayBrisbane(), { type: "date" })}${field("note", "Note", "", { full: true })}`, "Add")}
     ${invoices.length ? `<h2>Invoices</h2>${table(["Invoice", "Issued", "Total", "Status", "Actions"], invRows, "")}` : ""}
     ${formDialog("edit-job", `Edit ${esc(j.job_number)}`, `/jobs/${id}`, jobFields(j, clients, tiers))}
     ${confirmDelete("del-job", `job ${s(j.job_number)}`, `/jobs/${id}/delete`)}
@@ -324,16 +343,16 @@ function invoiceFromJobFields(j: Row, st: Record<string, string>): string {
 
 async function uploadFiles(c: Ctx, jobId: number): Promise<Response> {
   if (!(await getJob(c.env, jobId))) return notFound(c, "job");
-  if (!c.env.FILES) return redirect(`/jobs/${jobId}`, NO_STORAGE, true);
   const form = await c.req.formData();
   const files = form.getAll("files").filter((f): f is File => typeof f !== "string" && f.size > 0);
   if (!files.length) return redirect(`/jobs/${jobId}`, "Choose at least one file.", true);
   const skipped: string[] = [];
+  const max = maxUpload(c.env, MAX_UPLOAD);
   for (const f of files) {
-    if (f.size > MAX_UPLOAD) { skipped.push(`${f.name} (over 30 MB)`); continue; }
+    if (f.size > max) { skipped.push(`${f.name} (over ${sizeLabel(max)}${c.env.FILES ? "" : "; bigger files need R2 storage, not turned on yet"})`); continue; }
     const mime = f.type || "application/octet-stream";
     const key = fileKey(`plans/${jobId}`, f.name);
-    await c.env.FILES!.put(key, f.stream(), { httpMetadata: { contentType: mime } });
+    await putFile(c.env, key, f, mime);
     await c.env.DB.prepare(`INSERT INTO plan_files (job_id, r2_key, filename, mime, size) VALUES (?,?,?,?,?)`).bind(jobId, key, f.name, mime, f.size).run();
   }
   const done = files.length - skipped.length;
@@ -346,11 +365,10 @@ async function readFile(c: Ctx, fileId: number): Promise<Response> {
   const jobId = n(f.job_id);
   if (!c.env.ANTHROPIC_API_KEY) return redirect(`/jobs/${jobId}`, "Add the Claude API key first (see SETUP).", true);
   if (!isSupportedPlan(s(f.mime))) return redirect(`/jobs/${jobId}`, "Claude can read PDF, JPEG, PNG, GIF and WebP files.", true);
-  if (!c.env.FILES) return redirect(`/jobs/${jobId}`, NO_STORAGE, true);
-  const obj = await c.env.FILES.get(s(f.r2_key));
+  const obj = await getBytes(c.env, s(f.r2_key));
   if (!obj) return redirect(`/jobs/${jobId}`, "The stored file is missing.", true);
   try {
-    const result = await extractPlan(c.env.ANTHROPIC_API_KEY, { mime: s(f.mime), bytes: await obj.arrayBuffer() }, s(f.filename));
+    const result = await extractPlan(c.env.ANTHROPIC_API_KEY, { mime: s(f.mime), bytes: obj.bytes }, s(f.filename));
     // Replace this file's earlier Claude items; keep anything Jamie added or already ticked.
     const stmts = [
       c.env.DB.prepare(`UPDATE checklist_items SET deleted_at = datetime('now') WHERE file_id=? AND source='claude' AND done=0 AND deleted_at IS NULL`).bind(fileId),
@@ -448,11 +466,11 @@ async function savePlant(c: Ctx, id: number | null): Promise<Response> {
   const file = f.get("file");
   let fileCols: [string, string, string] | null = null;
   if (file && typeof file !== "string" && file.size > 0) {
-    if (!c.env.FILES) return redirect("/plants", NO_STORAGE, true);
-    if (file.size > 10 * 1024 * 1024) return redirect("/plants", "Symbol files can be up to 10 MB.", true);
+    const max = maxUpload(c.env, 10 * 1024 * 1024);
+    if (file.size > max) return redirect("/plants", `Symbol files can be up to ${sizeLabel(max)}${c.env.FILES ? "" : " until R2 storage is turned on"}.`, true);
     const key = fileKey("symbols", file.name);
     const mime = file.type || "application/octet-stream";
-    await c.env.FILES!.put(key, file.stream(), { httpMetadata: { contentType: mime } });
+    await putFile(c.env, key, file, mime);
     fileCols = [key, file.name, mime];
   }
   const common = s(f.get("common")).trim(), code = s(f.get("code")).trim();
@@ -500,10 +518,10 @@ async function saveClient(c: Ctx, id: number | null): Promise<Response> {
   const logo = f.get("logo");
   let logoKey: string | null = null;
   if (logo && typeof logo !== "string" && logo.size > 0) {
-    if (!c.env.FILES) return redirect("/clients", NO_STORAGE, true);
-    if (!isImage(logo.type) || logo.size > 5 * 1024 * 1024) return redirect("/clients", "The logo must be an image up to 5 MB.", true);
+    const max = maxUpload(c.env, 5 * 1024 * 1024);
+    if (!isImage(logo.type) || logo.size > max) return redirect("/clients", `The logo must be an image up to ${sizeLabel(max)}.`, true);
     logoKey = fileKey("logos", logo.name);
-    await c.env.FILES!.put(logoKey, logo.stream(), { httpMetadata: { contentType: logo.type } });
+    await putFile(c.env, logoKey, logo, logo.type);
   }
   const vals = [v("name"), v("contact"), v("email"), v("address"), v("copyright"), v("disclaimer")];
   if (id === null) {
@@ -550,7 +568,7 @@ async function invoicesPage(c: Ctx): Promise<Response> {
     esc(i.issued_on),
     `${esc(i.due_on)}${i.status !== "paid" && s(i.due_on) < today ? ` ${badge("Overdue", "bad")}` : ""}`,
     `<span class="num">${formatDollars(n(i.total_cents))}</span>`,
-    statusBadge(s(i.status)),
+    statusBadge(s(i.status), "invoice"),
     iconBtn({ icon: "eye", label: `Open invoice ${s(i.number)}`, href: `/invoices/${i.id}` }) +
       iconBtn({ icon: "printer", label: `Print or save ${s(i.number)} as PDF`, href: `/invoices/${i.id}?print=1` }) +
       iconBtn({ icon: "bin", label: `Delete invoice ${s(i.number)}`, dialog: `del-inv-${i.id}`, danger: true }),
@@ -574,7 +592,7 @@ async function invoicePage(c: Ctx, id: number): Promise<Response> {
   const lineRows = lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${l.qty}</td><td class="num">${formatDollars(l.unit_cents)}</td><td class="num">${formatDollars(Math.round(l.qty * l.unit_cents))}</td></tr>`).join("");
   const linesText = lines.map((l) => `${l.description} | ${(l.unit_cents / 100).toFixed(2)}${l.qty !== 1 ? ` | ${l.qty}` : ""}`).join("\n");
   const doc = `<article class="invoice">
-    <header><div><h1 style="margin:0">${gst ? "Tax invoice" : "Invoice"}</h1><div class="muted">${esc(i.number)}</div></div>
+    <header><div>${st.business_logo_key ? `<img src="/settings/logo" alt="${esc(st.business_name)}" style="max-height:64px;max-width:220px;display:block;margin-bottom:12px">` : ""}<h1 style="margin:0">${gst ? "Tax invoice" : "Invoice"}</h1><div class="muted">${esc(i.number)}</div></div>
       <div style="text-align:right"><b>${esc(st.business_name)}</b>${st.abn ? `<div>ABN ${esc(st.abn)}</div>` : ""}
       ${st.address ? `<div class="pre">${esc(st.address)}</div>` : ""}${st.email ? `<div>${esc(st.email)}</div>` : ""}${st.phone ? `<div>${esc(st.phone)}</div>` : ""}</div></header>
     <section class="meta"><div><div class="muted small">Bill to</div><b>${esc(i.client_name) || "—"}</b>${i.client_contact ? `<div>${esc(i.client_contact)}</div>` : ""}${i.client_address ? `<div class="pre">${esc(i.client_address)}</div>` : ""}${i.client_email ? `<div>${esc(i.client_email)}</div>` : ""}</div>
@@ -593,17 +611,66 @@ async function invoicePage(c: Ctx, id: number): Promise<Response> {
     .invoice .num{text-align:right;font-variant-numeric:tabular-nums}.invoice .totals{margin-left:auto;width:max-content;margin-bottom:24px}.invoice .grand{font-weight:700;font-size:17px;color:#111}
     @media print{.invoice{border:0;margin:0;padding:0;max-width:none}}</style>`;
   const autoPrint = c.url.searchParams.get("print") === "1" ? `<script>addEventListener("load",function(){print()})</script>` : "";
-  const body = `<div class="bar noprint"><h1>Invoice ${esc(i.number)}</h1>${statusBadge(s(i.status))}
+  const body = `<div class="bar noprint"><h1>Invoice ${esc(i.number)}</h1>${statusBadge(s(i.status), "invoice")}
       ${iconBtn({ icon: "pencil", label: "Edit invoice", dialog: "edit-inv" })}
       ${iconBtn({ icon: "printer", label: "Print or save as PDF", attrs: 'onclick="print()" type="button"' }).replace('type="submit" ', "")}
+      ${mailEnabled(c.env) && i.client_email ? iconBtn({ icon: "mail", label: `Email this invoice to ${s(i.client_email)}`, dialog: "email-inv" }) : ""}
       ${iconBtn({ icon: "bin", label: "Delete invoice", dialog: "del-inv", danger: true })}</div>
     ${invCss}${doc}
     ${formDialog("edit-inv", `Edit ${esc(i.number)}`, `/invoices/${id}`, `${pills("status", "Status", INVOICE_STATUSES, s(i.status))}
       ${field("issued_on", "Invoice date", s(i.issued_on), { type: "date" })}${field("due_on", "Due date", s(i.due_on), { type: "date" })}
       ${area("lines", "Lines", linesText, { rows: 4, hint: "One line each: description | amount | quantity (quantity is optional, default 1)." })}
       ${area("notes", "Notes on the invoice", s(i.notes), { rows: 2 })}`)}
-    ${confirmDelete("del-inv", `invoice ${s(i.number)}`, `/invoices/${id}/delete`)}${autoPrint}`;
+    ${confirmDelete("del-inv", `invoice ${s(i.number)}`, `/invoices/${id}/delete`)}${autoPrint}
+    ${dialog("email-inv", `Email ${esc(i.number)}?`, `<form method="post" action="/invoices/${id}/email">
+      <p>Sends the invoice to <b>${esc(i.client_email)}</b>${st.email ? `, with replies going to ${esc(st.email)}` : ""}. A draft is marked as sent.</p>
+      ${area("message", "Message (optional)", `Hi ${s(i.client_contact) || s(i.client_name)},\n\nPlease find invoice ${s(i.number)} below.\n\nThanks,\n${st.drawn_by || st.business_name}`, { rows: 5 })}
+      <div class="btns"><button type="button" class="btn" data-close>Cancel</button><button class="btn btn-primary">Send</button></div></form>`)}`;
   return layout({ title: `Invoice ${s(i.number)}`, path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
+}
+
+/** The invoice as an email: inline styles only, so it renders in mail clients. */
+function invoiceEmailHtml(i: Row, st: Record<string, string>, lines: InvoiceLine[], message: string): string {
+  const gst = n(i.gst_registered) === 1;
+  const td = 'style="padding:8px;border-bottom:1px solid #e3e6df"', tdr = 'style="padding:8px;border-bottom:1px solid #e3e6df;text-align:right"';
+  return `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:640px;margin:0 auto;padding:24px;color:#1d231c">
+  ${message ? `<p style="white-space:pre-line">${esc(message)}</p><hr style="border:0;border-top:1px solid #e3e6df;margin:24px 0">` : ""}
+  <table width="100%" style="border-collapse:collapse"><tr><td><h1 style="margin:0;font-size:22px">${gst ? "Tax invoice" : "Invoice"} ${esc(i.number)}</h1>
+    <div style="color:#5f6b5c">Issued ${esc(i.issued_on)} · Due ${esc(i.due_on)}${i.job_number ? ` · Job ${esc(i.job_number)}` : ""}</div></td>
+    <td style="text-align:right"><b>${esc(st.business_name)}</b>${st.abn ? `<br>ABN ${esc(st.abn)}` : ""}${st.email ? `<br>${esc(st.email)}` : ""}${st.phone ? `<br>${esc(st.phone)}` : ""}</td></tr></table>
+  <p><span style="color:#5f6b5c">Bill to</span><br><b>${esc(i.client_name)}</b>${i.client_contact ? `<br>${esc(i.client_contact)}` : ""}</p>
+  <table width="100%" style="border-collapse:collapse;margin:16px 0"><tr style="background:#f3f5f0"><th ${td} align="left">Description</th><th ${tdr}>Qty</th><th ${tdr}>Unit price</th><th ${tdr}>Amount</th></tr>
+  ${lines.map((l) => `<tr><td ${td}>${esc(l.description)}</td><td ${tdr}>${l.qty}</td><td ${tdr}>${formatDollars(l.unit_cents)}</td><td ${tdr}>${formatDollars(Math.round(l.qty * l.unit_cents))}</td></tr>`).join("")}</table>
+  <table style="margin-left:auto;border-collapse:collapse"><tr><td style="padding:2px 12px;color:#5f6b5c">Subtotal</td><td style="text-align:right">${formatDollars(n(i.subtotal_cents))}</td></tr>
+  ${gst ? `<tr><td style="padding:2px 12px;color:#5f6b5c">GST (10%)</td><td style="text-align:right">${formatDollars(n(i.gst_cents))}</td></tr>` : ""}
+  <tr><td style="padding:6px 12px;font-weight:700">Total${gst ? " (incl. GST)" : ""}</td><td style="text-align:right;font-weight:700;font-size:18px">${formatDollars(n(i.total_cents))}</td></tr></table>
+  ${gst ? "" : `<p style="color:#5f6b5c;font-size:13px">No GST has been charged.</p>`}
+  ${st.payment_details ? `<p><span style="color:#5f6b5c">Payment details</span><br><span style="white-space:pre-line">${esc(st.payment_details)}</span></p>` : ""}
+  ${i.notes ? `<p style="white-space:pre-line">${esc(i.notes)}</p>` : ""}</div>`;
+}
+
+async function emailInvoice(c: Ctx, id: number): Promise<Response> {
+  const i = await c.env.DB.prepare(
+    `SELECT i.*, c.name AS client_name, c.contact AS client_contact, c.email AS client_email, j.job_number
+       FROM invoices i LEFT JOIN clients c ON c.id=i.client_id LEFT JOIN jobs j ON j.id=i.job_id WHERE i.id=? AND i.deleted_at IS NULL`,
+  ).bind(id).first<Row>();
+  if (!i) return notFound(c, "invoice");
+  if (!mailEnabled(c.env)) return redirect(`/invoices/${id}`, "Email isn't set up yet. Print or save the invoice as a PDF instead.", true);
+  if (!i.client_email) return redirect(`/invoices/${id}`, "Add an email address to the client first.", true);
+  if (!(await rateLimit(c.env, `invmail:${id}`, 5, 3600))) return redirect(`/invoices/${id}`, "This invoice was emailed several times in the last hour. Try again later.", true);
+  const st = await settings(c.env);
+  const lines = JSON.parse(s(i.lines_json)) as InvoiceLine[];
+  const message = s((await c.req.formData()).get("message")).trim().slice(0, 2000);
+  const gst = n(i.gst_registered) === 1;
+  const sent = await sendMail(c.env, {
+    to: s(i.client_email), replyTo: st.email || undefined,
+    subject: `${gst ? "Tax invoice" : "Invoice"} ${s(i.number)} from ${st.business_name}`,
+    text: `${message ? message + "\n\n" : ""}${gst ? "Tax invoice" : "Invoice"} ${s(i.number)}\nIssued ${s(i.issued_on)}, due ${s(i.due_on)}\n\n${lines.map((l) => `${l.description}: ${formatDollars(Math.round(l.qty * l.unit_cents))}`).join("\n")}\n\nTotal${gst ? " (incl. GST)" : ""}: ${formatDollars(n(i.total_cents))}\n${st.payment_details ? `\nPayment details:\n${st.payment_details}\n` : ""}`,
+    html: invoiceEmailHtml(i, st, lines, message),
+  });
+  if (!sent) return redirect(`/invoices/${id}`, "The email couldn't be sent. Try again, or print or save it as a PDF.", true);
+  await c.env.DB.prepare(`UPDATE invoices SET status = CASE WHEN status='draft' THEN 'sent' ELSE status END WHERE id=?`).bind(id).run();
+  return redirect(`/invoices/${id}`, `Invoice ${s(i.number)} emailed to ${s(i.client_email)}.`);
 }
 
 export function parseLines(text: string): InvoiceLine[] | null {
@@ -640,6 +707,15 @@ const SETTING_FIELDS = ["business_name", "abn", "email", "phone", "address", "pa
 
 async function settingsPage(c: Ctx): Promise<Response> {
   const [st, tiers] = await Promise.all([settings(c.env), tiersList(c.env)]);
+  // Per size: total minutes per job (only jobs with recorded time), then average, shortest, longest.
+  const perJob = (await c.env.DB.prepare(
+    `SELECT j.tier_id, j.id, SUM(t.minutes) AS mins FROM jobs j JOIN time_entries t ON t.job_id = j.id
+      WHERE j.deleted_at IS NULL AND t.deleted_at IS NULL AND t.minutes IS NOT NULL AND j.tier_id IS NOT NULL GROUP BY j.id`,
+  ).all<{ tier_id: number; id: number; mins: number }>()).results;
+  const calib = tiers.map((t) => {
+    const m = perJob.filter((r) => r.tier_id === Number(t.id)).map((r) => r.mins);
+    return { name: s(t.name), price: n(t.price_cents), jobs: m.length, avg: m.length ? m.reduce((a, b) => a + b, 0) / m.length : 0, min: Math.min(...m), max: Math.max(...m) };
+  });
   const nextJob = formatNumber(st.job_prefix, Number(st.job_next), Number(st.job_pad));
   const nextInv = formatNumber(st.invoice_prefix, Number(st.invoice_next), Number(st.invoice_pad));
   const tierRows = tiers.map((t) => [`<b>${esc(t.name)}</b>`, esc(t.description), `<span class="num">${n(t.price_cents) ? formatDollars(n(t.price_cents)) : '<span class="muted">Not set</span>'}</span>`,
@@ -649,7 +725,19 @@ async function settingsPage(c: Ctx): Promise<Response> {
     <div class="bar"><h2>Job sizes and prices</h2>${iconBtn({ icon: "plus", label: "Add a size", dialog: "new-tier" })}</div>
     <p class="sub">You price by the size of the job, not by the hour. Time a few practice jobs, then set a price for each size.</p>
     ${table(["Size", "What it covers", "Price (before GST)", "Actions"], tierRows, "No sizes yet.")}
+    <h2>How long jobs take</h2>
+    <p class="sub small">From the time you record on jobs (finished timers and hand-entered time). Use it to check each size's price; the last column is what the price works out to per hour.</p>
+    ${table(["Size", "Jobs timed", "Average", "Shortest", "Longest", "Price per hour"], calib.map((k) => [
+      `<b>${esc(k.name)}</b>`, String(k.jobs), k.jobs ? formatMinutes(k.avg) : "—", k.jobs ? formatMinutes(k.min) : "—", k.jobs ? formatMinutes(k.max) : "—",
+      k.jobs && k.price ? `${formatDollars(Math.round(k.price / (k.avg / 60)))}/h` : '<span class="muted">—</span>',
+    ]), "No sizes yet.")}
     <h2>Business and invoices</h2>
+    <div class="panel bar" style="margin-bottom:12px">${st.business_logo_key ? `<img class="thumb" src="/settings/logo" alt="" style="width:auto;max-width:120px;height:40px">` : ""}
+      <span class="grow"><b>Your logo</b><br><span class="small muted">${st.business_logo_key ? "Shown at the top of your invoices." : "Add your logo to show it at the top of your invoices."}</span></span>
+      ${iconBtn({ icon: "upload", label: st.business_logo_key ? "Replace your logo" : "Upload your logo", dialog: "biz-logo" })}
+      ${st.business_logo_key ? iconBtn({ icon: "bin", label: "Remove your logo", dialog: "del-biz-logo", danger: true }) : ""}</div>
+    ${formDialog("biz-logo", "Your logo", "/settings/logo", `<label class="fld full"><span>Logo image</span><input type="file" name="logo" required accept="image/svg+xml,image/png,image/jpeg,image/webp"><small>PNG, SVG, JPEG or WebP, up to 1 MB.</small></label>`, "Upload", "multipart/form-data")}
+    ${confirmDelete("del-biz-logo", "your logo", "/settings/logo/delete")}
     <form method="post" action="/settings" class="panel"><div class="grid">
       ${field("business_name", "Business name", st.business_name, { required: true })}${field("abn", "ABN", st.abn, { attrs: 'inputmode="numeric"' })}
       ${field("email", "Email", st.email, { type: "email" })}${field("phone", "Phone", st.phone)}
@@ -702,6 +790,61 @@ async function saveTier(c: Ctx, id: number | null): Promise<Response> {
   if (id === null) await c.env.DB.prepare(`INSERT INTO size_tiers (name, description, price_cents, sort) VALUES (?,?,?,?)`).bind(name, s(f.get("description")).trim(), price, sort).run();
   else await c.env.DB.prepare(`UPDATE size_tiers SET name=?, description=?, price_cents=?, sort=? WHERE id=?`).bind(name, s(f.get("description")).trim(), price, sort, id).run();
   return redirect("/settings", `${name} saved.`);
+}
+
+// ---------- Getting started ----------
+
+async function gettingStarted(c: Ctx): Promise<string> {
+  const st = await settings(c.env);
+  if (st.onboarding_hidden === "1") return "";
+  const one = async (sql: string) => n((await c.env.DB.prepare(sql).first<{ n: number }>())?.n);
+  const signIn = await c.env.DB.prepare(`SELECT (password_hash IS NOT NULL) + (SELECT COUNT(*) FROM passkeys WHERE user_id=users.id) AS n FROM users WHERE id=?`).bind(c.user.id).first<{ n: number }>();
+  const steps: [boolean, string, string][] = [
+    [st.business_name !== "Your business name" && !!st.business_name, "Add your business details", "/settings"],
+    [(await one(`SELECT COUNT(*) AS n FROM size_tiers WHERE deleted_at IS NULL AND price_cents > 0`)) > 0, "Set a price for each job size", "/settings"],
+    [(await one(`SELECT COUNT(*) AS n FROM clients WHERE deleted_at IS NULL`)) > 0, "Add Shane's business as a client, with his copyright line", "/clients"],
+    [(await one(`SELECT COUNT(*) AS n FROM plant_symbols WHERE deleted_at IS NULL`)) > 0, "Add your plant graphics (or import a CSV list)", "/plants"],
+    [n(signIn?.n) > 0, "Add a passkey or password so you can sign in without an email code", "/account"],
+    [(await one(`SELECT COUNT(*) AS n FROM jobs WHERE deleted_at IS NULL`)) > 0, "Create your first job", "/"],
+  ];
+  const left = steps.filter(([done]) => !done).length;
+  if (!left) return "";
+  return `<section class="panel onboard" aria-label="Getting started"><div class="bar"><b class="grow">Getting started · ${steps.length - left} of ${steps.length} done</b>
+    <form method="post" action="/settings/onboarding/hide" class="inline">${iconBtn({ icon: "x", label: "Hide this checklist" })}</form></div>
+    <ol>${steps.map(([done, text, href]) => `<li class="${done ? "done" : ""}">${done ? icon("check") : `<span class="todo-dot" aria-hidden="true"></span>`}${done ? `<span>${esc(text)}</span>` : `<a href="${href}">${esc(text)}</a>`}</li>`).join("")}</ol></section>`;
+}
+
+// ---------- Time ----------
+
+const nowSql = () => new Date().toISOString().replace("T", " ").slice(0, 19);
+
+async function timeRoute(c: Ctx, jobId: number, action: string): Promise<Response> {
+  if (!(await getJob(c.env, jobId))) return notFound(c, "job");
+  const running = await c.env.DB.prepare(`SELECT id, started_at FROM time_entries WHERE job_id=? AND user_id=? AND ended_at IS NULL AND deleted_at IS NULL`).bind(jobId, c.user.id).first<{ id: number; started_at: string }>();
+  if (action === "timer/start") {
+    if (running) return redirect(`/jobs/${jobId}`, "The timer is already running.");
+    // One timer at a time: stop any running on other jobs first.
+    const others = (await c.env.DB.prepare(`SELECT id, started_at FROM time_entries WHERE user_id=? AND ended_at IS NULL AND deleted_at IS NULL`).bind(c.user.id).all<{ id: number; started_at: string }>()).results;
+    const now = nowSql();
+    await c.env.DB.batch([
+      ...others.map((o) => c.env.DB.prepare(`UPDATE time_entries SET ended_at=?, minutes=? WHERE id=?`).bind(now, minutesBetween(o.started_at, now), o.id)),
+      c.env.DB.prepare(`INSERT INTO time_entries (job_id, user_id, started_at) VALUES (?,?,?)`).bind(jobId, c.user.id, now),
+    ]);
+    return redirect(`/jobs/${jobId}`, others.length ? "Timer started (your timer on another job was stopped)." : "Timer started.");
+  }
+  if (action === "timer/stop") {
+    if (!running) return redirect(`/jobs/${jobId}`, "No timer is running.");
+    const now = nowSql(), mins = minutesBetween(running.started_at, now);
+    await c.env.DB.prepare(`UPDATE time_entries SET ended_at=?, minutes=? WHERE id=?`).bind(now, mins, running.id).run();
+    return redirect(`/jobs/${jobId}`, `Timer stopped: ${formatMinutes(mins)}.`);
+  }
+  const f = await c.req.formData();
+  const mins = parseDuration(s(f.get("duration")));
+  if (mins === null) return redirect(`/jobs/${jobId}`, "Enter the time like 90, 1:30 or 1.5h (up to 24 hours).", true);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(s(f.get("date"))) ? s(f.get("date")) : todayBrisbane();
+  const start = `${date} 00:00:00`;
+  await c.env.DB.prepare(`INSERT INTO time_entries (job_id, user_id, started_at, ended_at, minutes, note) VALUES (?,?,?,?,?,?)`).bind(jobId, c.user.id, start, start, mins, s(f.get("note")).trim().slice(0, 200)).run();
+  return redirect(`/jobs/${jobId}`, `Added ${formatMinutes(mins)}.`);
 }
 
 // ---------- Plant import and data export ----------
@@ -778,14 +921,14 @@ export async function route(c: Ctx): Promise<Response> {
     }
     if ((r = m(/^\/logos\/(\d+)$/))) {
       const cl = await env.DB.prepare(`SELECT logo_key FROM clients WHERE id=? AND deleted_at IS NULL`).bind(+r[1]).first<Row>();
-      const obj = cl?.logo_key && env.FILES ? await env.FILES.head(s(cl.logo_key)) : null;
-      return serveObject(env, cl?.logo_key ? s(cl.logo_key) : null, "logo", obj?.httpMetadata?.contentType ?? "image/png");
+      return serveObject(env, cl?.logo_key ? s(cl.logo_key) : null, "logo");
     }
     if (p === "/plants") return plantsPage(c);
     if (p === "/plants.csv") {
       const syms = await symbolsList(env);
       return download(toCsv([["botanical", "common", "code", "symbol_file"], ...syms.map((x) => [s(x.botanical), s(x.common), s(x.code), s(x.filename)])]), "plant-library.csv", "text/csv; charset=utf-8");
     }
+    if (p === "/settings/logo") return serveObject(env, (await settings(env)).business_logo_key || null, "logo");
     if (p === "/settings/export.json") return c.user.role === "owner" ? exportData(c) : notFound(c);
     if (p === "/clients") return clientsPage(c);
     if (p === "/invoices") return invoicesPage(c);
@@ -804,6 +947,13 @@ export async function route(c: Ctx): Promise<Response> {
     if ((r = m(/^\/jobs\/(\d+)$/))) return updateJob(c, +r[1]);
     if ((r = m(/^\/jobs\/(\d+)\/delete$/))) { await softDelete(env, "jobs", +r[1]); return redirect("/", "Job deleted."); }
     if ((r = m(/^\/jobs\/(\d+)\/files$/))) return uploadFiles(c, +r[1]);
+    if ((r = m(/^\/jobs\/(\d+)\/(timer\/start|timer\/stop|time)$/))) return timeRoute(c, +r[1], r[2]);
+    if ((r = m(/^\/time\/(\d+)\/delete$/))) {
+      const t = await env.DB.prepare(`SELECT job_id FROM time_entries WHERE id=? AND deleted_at IS NULL`).bind(+r[1]).first<{ job_id: number }>();
+      if (!t) return notFound(c, "time entry");
+      await softDelete(env, "time_entries", +r[1]);
+      return redirect(`/jobs/${t.job_id}`, "Time entry deleted.");
+    }
     if ((r = m(/^\/jobs\/(\d+)\/invoice$/))) return createInvoiceFromJob(c, +r[1]);
     if ((r = m(/^\/jobs\/(\d+)\/items$/))) {
       const v = itemValues(await req.formData());
@@ -847,8 +997,25 @@ export async function route(c: Ctx): Promise<Response> {
     if ((r = m(/^\/clients\/(\d+)\/delete$/))) { await softDelete(env, "clients", +r[1]); return redirect("/clients", "Client deleted."); }
     if ((r = m(/^\/clients\/(\d+)$/))) return saveClient(c, +r[1]);
     if ((r = m(/^\/invoices\/(\d+)\/delete$/))) { await softDelete(env, "invoices", +r[1]); return redirect("/invoices", "Invoice deleted. Its number is not reused."); }
+    if ((r = m(/^\/invoices\/(\d+)\/email$/))) return emailInvoice(c, +r[1]);
     if ((r = m(/^\/invoices\/(\d+)$/))) return updateInvoice(c, +r[1]);
     if (p === "/settings") return saveSettings(c);
+    if (p === "/settings/logo") {
+      const logo = (await req.formData()).get("logo");
+      if (!logo || typeof logo === "string" || !isImage(logo.type) || logo.size > 1024 * 1024) return redirect("/settings", "Choose a PNG, SVG, JPEG or WebP image up to 1 MB.", true);
+      const key = fileKey("business", logo.name);
+      await putFile(env, key, logo, logo.type);
+      await env.DB.prepare(`UPDATE settings SET value=? WHERE key='business_logo_key'`).bind(key).run();
+      return redirect("/settings", "Logo saved.");
+    }
+    if (p === "/settings/logo/delete") {
+      await env.DB.prepare(`UPDATE settings SET value='' WHERE key='business_logo_key'`).run();
+      return redirect("/settings", "Logo removed.");
+    }
+    if (p === "/settings/onboarding/hide") {
+      await env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('onboarding_hidden','1') ON CONFLICT(key) DO UPDATE SET value='1'`).run();
+      return redirect("/");
+    }
     if (p === "/tiers") return saveTier(c, null);
     if ((r = m(/^\/tiers\/(\d+)\/delete$/))) { await softDelete(env, "size_tiers", +r[1]); return redirect("/settings", "Size deleted."); }
     if ((r = m(/^\/tiers\/(\d+)$/))) return saveTier(c, +r[1]);
@@ -870,7 +1037,17 @@ export default {
         const next = url.pathname === "/" ? "" : `?next=${encodeURIComponent(url.pathname + url.search)}`;
         return new Response(null, { status: 303, headers: { location: `/login${next}` } });
       }
-      return await route({ env, req, url, user });
+      try {
+        return await route({ env, req, url, user });
+      } catch (e) {
+        if (e instanceof StorageError) {
+          // Back to the page the form was on (same site only).
+          let back = "/";
+          try { const r = new URL(req.headers.get("referer") ?? "", url); if (r.origin === url.origin) back = r.pathname; } catch { /* keep "/" */ }
+          return redirect(back, e.message, true);
+        }
+        throw e;
+      }
     } catch (e) {
       console.error(e);
       return new Response("Something went wrong. Please try again.", { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });

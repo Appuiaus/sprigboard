@@ -109,3 +109,30 @@ describe("csv import", () => {
     expect(plantRowsFromCsv("botanical")).toEqual({ error: expect.stringContaining("header row") });
   });
 });
+
+import { brisbaneTime, formatMinutes, minutesBetween, parseDuration } from "../src/lib";
+
+describe("time", () => {
+  it("reads durations the way people type them", () => {
+    expect(parseDuration("90")).toBe(90);
+    expect(parseDuration("90 min")).toBe(90);
+    expect(parseDuration("1:30")).toBe(90);
+    expect(parseDuration("1.5h")).toBe(90);
+    expect(parseDuration("1h 30m")).toBe(90);
+    expect(parseDuration("2 hours")).toBe(120);
+    expect(parseDuration("0")).toBeNull();
+    expect(parseDuration("25h")).toBeNull();
+    expect(parseDuration("abc")).toBeNull();
+    expect(parseDuration("1:75")).toBeNull();
+  });
+  it("formats minutes", () => {
+    expect(formatMinutes(45)).toBe("45 min");
+    expect(formatMinutes(60)).toBe("1 h");
+    expect(formatMinutes(135)).toBe("2 h 15 min");
+  });
+  it("measures between D1 timestamps", () => {
+    expect(minutesBetween("2026-11-07 01:00:00", "2026-11-07 02:30:20")).toBe(90);
+    expect(minutesBetween("2026-11-07 01:00:00", "2026-11-07 01:00:05")).toBe(1);
+  });
+  it("shows Brisbane time", () => expect(brisbaneTime("2026-11-07 04:05:00")).toMatch(/7 Nov.*2:05\s?pm/i));
+});
