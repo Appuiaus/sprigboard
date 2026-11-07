@@ -5,6 +5,7 @@
 import { esc } from "./lib";
 import { mailEnabled, sendMail, type MailEnv } from "./mail";
 import { field, iconBtn, icon, layoutBare, table, badge, formDialog, confirmDelete, pills, layout, dialog } from "./ui";
+import { listPasskeys, deviceName, PASSKEY_JS } from "./passkeys";
 
 export interface AuthEnv extends MailEnv {
   DB: D1Database;
@@ -133,7 +134,8 @@ function readCookie(req: Request, name: string): string | null {
   return null;
 }
 
-export async function startSession(env: AuthEnv, req: Request, userId: number, to = "/"): Promise<Response> {
+/** Creates a session and returns its Set-Cookie value. */
+export async function sessionCookie(env: AuthEnv, req: Request, userId: number): Promise<string> {
   const token = randomToken();
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO sessions (token_hash, user_id, expires_at, user_agent) VALUES (?,?,?,?)`)
@@ -141,7 +143,11 @@ export async function startSession(env: AuthEnv, req: Request, userId: number, t
     env.DB.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id=?`).bind(userId),
     env.DB.prepare(`DELETE FROM sessions WHERE expires_at < datetime('now')`),
   ]);
-  return new Response(null, { status: 303, headers: { location: safeNext(to), "set-cookie": cookie(req, token, SESSION_DAYS * 86400) } });
+  return cookie(req, token, SESSION_DAYS * 86400);
+}
+
+export async function startSession(env: AuthEnv, req: Request, userId: number, to = "/"): Promise<Response> {
+  return new Response(null, { status: 303, headers: { location: safeNext(to), "set-cookie": await sessionCookie(env, req, userId) } });
 }
 
 export async function currentUser(env: AuthEnv, req: Request): Promise<User | null> {
@@ -213,19 +219,21 @@ function emailHtml(heading: string, body: string, action?: { href: string; label
 
 type AuthCtx = { env: AuthEnv; req: Request; url: URL };
 
-const authPage = (title: string, body: string, flash?: { msg: string; err?: boolean } | null, status = 200) => layoutBare({ title, body, flash, status });
+const authPage = (title: string, body: string, flash?: { msg: string; err?: boolean } | null, status = 200, script = "") => layoutBare({ title, body, flash, status, script });
 
 function loginPage(c: AuthCtx, flash?: { msg: string; err?: boolean } | null, email = "", status = 200): Response {
   const next = safeNext(c.url.searchParams.get("next"));
   const mail = mailEnabled(c.env);
   return authPage("Sign in", `<h1>Sign in</h1>
+    <div data-passkey hidden><button type="button" class="btn wide passkey" id="passkey-login" data-next="${esc(next)}">${icon("key")}Sign in with a passkey</button>
+      <div id="passkey-msg" role="status" hidden></div><div class="or"><span>or</span></div></div>
     <form method="post" action="/login?next=${encodeURIComponent(next)}" class="stack">
       ${field("email", "Email", email, { type: "email", required: true, full: true, attrs: 'autocomplete="username" autofocus' })}
       ${field("password", "Password", "", { type: "password", required: true, full: true, attrs: 'autocomplete="current-password"' })}
       <button class="btn btn-primary wide">Sign in</button>
     </form>
     <div class="alt">${mail ? `<a href="/login/code?next=${encodeURIComponent(next)}${email ? `&email=${encodeURIComponent(email)}` : ""}">${icon("sparkle")}Email me a sign-in code instead</a>
-      <a href="/forgot">Forgot your password?</a>` : `<span class="muted small">Email isn't set up yet, so sign-in codes and password resets are unavailable.</span>`}</div>`, flash ?? flashOf(c.url), status);
+      <a href="/forgot">Forgot your password?</a>` : `<span class="muted small">Email isn't set up yet, so sign-in codes and password resets are unavailable.</span>`}</div>`, flash ?? flashOf(c.url), status, PASSKEY_JS);
 }
 
 function codeRequestPage(c: AuthCtx, flash?: { msg: string; err?: boolean } | null): Response {
@@ -411,6 +419,8 @@ type AppCtx = AuthCtx & { user: User };
 export async function accountPage(c: AppCtx): Promise<Response> {
   const u = c.user;
   const sessions = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM sessions WHERE user_id=? AND expires_at > datetime('now')`).bind(u.id).first<{ n: number }>();
+  const passkeys = await listPasskeys(c.env, u.id);
+  const pkIds = new Map(passkeys.map((k, i) => [k.id, i])); // short ids for dialog elements
   const body = `<h1>Your account</h1><p class="sub">${esc(u.email)} · ${u.role === "owner" ? "Owner" : "Member"}</p>
     <form method="post" action="/account/name" class="panel"><div class="grid">
       ${field("name", "Your name", u.name, { full: true, attrs: 'autocomplete="name"' })}</div>
@@ -422,12 +432,25 @@ export async function accountPage(c: AppCtx): Promise<Response> {
       ${field("password", "New password", "", { type: "password", required: true, hint: `At least ${MIN_PASSWORD} characters.`, attrs: `autocomplete="new-password" minlength="${MIN_PASSWORD}"` })}
       ${field("confirm", "Type it again", "", { type: "password", required: true, attrs: 'autocomplete="new-password"' })}</div>
       <div class="btns"><button class="btn btn-primary">${u.has_password ? "Change password" : "Set password"}</button></div></form>
+    <div class="bar"><h2>Passkeys</h2><span data-passkey hidden>${iconBtn({ icon: "key", label: "Add a passkey", dialog: "passkey-add" })}</span></div>
+    <p class="sub small">Sign in with your fingerprint, face or device PIN instead of a password. Passkeys sync through iCloud Keychain, Google Password Manager and similar.
+      <span data-passkey-unsupported hidden><b>This browser can't create passkeys.</b></span></p>
+    ${table(["Name", "Added", "Last used", "Synced", "Actions"], passkeys.map((k) => [
+      esc(k.name), esc(String(k.created_at).slice(0, 10)), k.last_used_at ? esc(String(k.last_used_at).slice(0, 16)) : '<span class="muted">Never</span>',
+      k.backed_up ? badge("Synced", "ok") : badge("This device", "muted"),
+      iconBtn({ icon: "pencil", label: `Rename ${String(k.name)}`, dialog: `pk-edit-${pkIds.get(k.id)}` }) + iconBtn({ icon: "bin", label: `Remove ${String(k.name)}`, dialog: `pk-del-${pkIds.get(k.id)}`, danger: true }),
+    ]), "No passkeys yet. Add one to sign in without a password.")}
+    ${passkeys.map((k) => formDialog(`pk-edit-${pkIds.get(k.id)}`, "Rename passkey", `/passkeys/${String(k.id)}`, field("name", "Name", String(k.name), { required: true, full: true })) +
+      confirmDelete(`pk-del-${pkIds.get(k.id)}`, `the passkey "${String(k.name)}"`, `/passkeys/${String(k.id)}/delete`)).join("")}
+    ${dialog("passkey-add", "Add a passkey", `<form id="passkey-add-form"><div class="grid">${field("name", "Name", deviceName(c.req.headers.get("user-agent") ?? ""), { required: true, full: true, hint: "So you can tell your passkeys apart, e.g. Jamie's iPhone." })}</div>
+      <div id="passkey-add-msg" role="status" hidden></div>
+      <div class="btns"><button type="button" class="btn" data-close>Cancel</button><button class="btn btn-primary">Create passkey</button></div></form>`)}
     <h2>Sign-ins</h2>
-    <div class="panel bar"><span>Signed in on ${sessions?.n ?? 1} browser${(sessions?.n ?? 1) === 1 ? "" : "s"}.</span>
+    <div class="panel bar"><span class="grow">Signed in on ${sessions?.n ?? 1} browser${(sessions?.n ?? 1) === 1 ? "" : "s"}.</span>
       ${iconBtn({ icon: "power", label: "Sign out of every browser", dialog: "out-all", danger: true })}</div>
     ${dialog("out-all", "Sign out everywhere?", `<form method="post" action="/account/signout-all"><p>This signs you out of every browser, including this one.</p>
       <div class="btns"><button type="button" class="btn" data-close>Cancel</button><button class="btn btn-danger">Sign out everywhere</button></div></form>`, { danger: true })}`;
-  return layout({ title: "Your account", path: c.url.pathname, user: u, body, flash: flashOf(c.url) });
+  return layout({ title: "Your account", path: c.url.pathname, user: u, body, flash: flashOf(c.url), script: PASSKEY_JS });
 }
 
 export async function accountPost(c: AppCtx): Promise<Response | null> {
@@ -463,16 +486,16 @@ export async function accountPost(c: AppCtx): Promise<Response | null> {
 }
 
 export async function usersPage(c: AppCtx, inviteLink?: { email: string; link: string }): Promise<Response> {
-  const { results } = await c.env.DB.prepare(`SELECT id, email, name, role, password_hash IS NOT NULL AS has_password, last_login_at FROM users WHERE deleted_at IS NULL ORDER BY role DESC, email`).all<Record<string, unknown>>();
+  const { results } = await c.env.DB.prepare(`SELECT id, email, name, role, password_hash IS NOT NULL AS has_password, last_login_at, (SELECT COUNT(*) FROM passkeys k WHERE k.user_id = users.id) AS passkeys FROM users WHERE deleted_at IS NULL ORDER BY role DESC, email`).all<Record<string, unknown>>();
   const rows = results.map((u) => {
     const self = Number(u.id) === c.user.id;
     return [
       `${esc(u.name) || '<span class="muted">No name yet</span>'}${self ? ` ${badge("You", "muted")}` : ""}`,
       esc(u.email),
       u.role === "owner" ? badge("Owner", "ok") : badge("Member"),
-      u.has_password ? badge("Set", "ok") : badge("Not yet", "warn"),
+      (u.has_password ? badge("Password", "ok") : badge("No password", "warn")) + (Number(u.passkeys) ? ` ${badge(`${u.passkeys} passkey${Number(u.passkeys) === 1 ? "" : "s"}`, "ok")}` : ""),
       u.last_login_at ? esc(String(u.last_login_at).slice(0, 16)) : '<span class="muted">Never</span>',
-      (u.has_password ? "" : `<form method="post" action="/users/${u.id}/invite">${iconBtn({ icon: "mail", label: `Send ${String(u.email)} a new invite link` })}</form>`) +
+      (u.has_password || Number(u.passkeys) ? "" : `<form method="post" action="/users/${u.id}/invite">${iconBtn({ icon: "mail", label: `Send ${String(u.email)} a new invite link` })}</form>`) +
         (self ? "" : iconBtn({ icon: "pencil", label: `Change role for ${String(u.email)}`, dialog: `role-${u.id}` }) +
           iconBtn({ icon: "bin", label: `Remove ${String(u.email)}`, dialog: `del-user-${u.id}`, danger: true })),
     ];
@@ -484,7 +507,7 @@ export async function usersPage(c: AppCtx, inviteLink?: { email: string; link: s
   const body = `<div class="bar"><h1>Users</h1>${iconBtn({ icon: "plus", label: "Invite someone", dialog: "invite" }).replace('class="ib"', 'class="ib primary"')}</div>
     <p class="sub">Who can sign in to Sprigboard. Invited people get an email with a link to choose their password; they can also sign in with an emailed code.</p>
     ${inviteLink ? `<div class="flash" role="status">Email isn't set up, so send this invite link to ${esc(inviteLink.email)} yourself (it works for ${INVITE_DAYS} days):<br><input readonly value="${esc(inviteLink.link)}" onclick="this.select()" style="margin-top:6px"></div>` : ""}
-    ${table(["Name", "Email", "Role", "Password", "Last sign-in", "Actions"], rows, "No users.")}
+    ${table(["Name", "Email", "Role", "Sign-in", "Last sign-in", "Actions"], rows, "No users.")}
     ${formDialog("invite", "Invite someone", "/users", `${field("email", "Email", "", { type: "email", required: true, full: true })}${field("name", "Name", "", { full: true })}
       ${pills("role", "Role", [["member", "Member"], ["owner", "Owner"]], "member")}
       <p class="small muted full">${mail ? "They'll get an email with a link to choose a password." : "Email isn't set up, so you'll get a link to send them yourself."}</p>`, "Invite")}${dlgs}`;
@@ -529,6 +552,7 @@ export async function usersPost(c: AppCtx): Promise<Response | null> {
     await env.DB.batch([
       env.DB.prepare(`UPDATE users SET deleted_at = datetime('now') WHERE id=?`).bind(+r[1]),
       env.DB.prepare(`DELETE FROM sessions WHERE user_id=?`).bind(+r[1]),
+      env.DB.prepare(`DELETE FROM passkeys WHERE user_id=?`).bind(+r[1]),
       env.DB.prepare(`UPDATE auth_tokens SET used_at = datetime('now') WHERE user_id=? AND used_at IS NULL`).bind(+r[1]),
     ]);
     return redirect("/users", "User removed and signed out.");

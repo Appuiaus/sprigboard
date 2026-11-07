@@ -28,6 +28,7 @@ const ICONS: Record<string, string> = {
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2 20a7 7 0 0 1 14 0M16 4.5a3.5 3.5 0 0 1 0 7M18 20a7 7 0 0 0-2.5-5.4"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>',
+  key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
   power: '<path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.8 0"/>',
 };
 
@@ -167,6 +168,9 @@ tr.done td:not(.actions){color:var(--muted)}tr.done .lbl{text-decoration:line-th
 .auth{max-width:420px;margin:6vh auto 0}.auth .card{background:linear-gradient(160deg,var(--dlg-a),var(--dlg-b));border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:14px;padding:24px;box-shadow:var(--shadow)}
 .auth h1{margin-top:0}.stack{display:flex;flex-direction:column;gap:12px}.btn.wide{justify-content:center;width:100%;padding:10px}
 .alt{display:flex;flex-direction:column;gap:8px;margin-top:16px;font-size:14px}.alt a{display:inline-flex;align-items:center;gap:6px;color:var(--accent)}
+button.passkey{gap:8px;font-weight:600;border-color:var(--accent);color:var(--accent)}
+.or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;margin:16px 0 8px}.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
+#passkey-msg,#passkey-add-msg{margin-top:8px}.grow{margin-right:auto}
 input.code{font-size:24px;letter-spacing:8px;text-align:center;font-variant-numeric:tabular-nums}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 @media (max-width:720px){
@@ -180,7 +184,11 @@ input.code{font-size:24px;letter-spacing:8px;text-align:center;font-variant-nume
  td::before{content:attr(data-label);color:var(--muted);font-size:12px;text-transform:uppercase;text-align:left}
  td .cv{min-width:0;overflow-wrap:anywhere}td.actions{width:auto;justify-content:flex-end}td.actions::before{content:none}
 }
-@media print{header.top,.noprint{display:none!important}body{background:#fff;color:#000}main{padding:0}}
+.site-signature{position:fixed;bottom:1rem;left:1rem;display:inline-flex;gap:4px;padding:.4rem .5rem;background:#0b0b0b;border-radius:.375rem;opacity:.45;z-index:10}
+.site-signature:hover{opacity:.85}.site-signature__byte{display:grid;grid-template-rows:repeat(8,1fr);gap:2px}
+.site-signature__dot{width:3px;height:3px;border-radius:50%;border:1px solid #fff}.site-signature__dot--one{background:#fff}
+main{padding-bottom:72px}
+@media print{.site-signature{display:none}header.top,.noprint{display:none!important}body{background:#fff;color:#000}main{padding:0}}
 `;
 
 // Runs in <head> before paint: applies the saved colour mode with no flash.
@@ -213,6 +221,17 @@ const BODY_JS = `
  document.querySelectorAll("form[data-busy]").forEach(function(f){f.addEventListener("submit",function(){var b=f.querySelector("button:not([data-close])");if(b){b.disabled=true;b.setAttribute("aria-busy","true")}var m=document.getElementById(f.dataset.busy);if(m)m.hidden=false})});
 })();`;
 
+// Pedro's site signature: the binary-dot mark, byte-for-byte identical to veloso.dev,
+// velosolabs.com and systemsnotsilos.com. Keep it in sync with those if the mark changes.
+const SIGNATURE_URL = "https://s.zqx.io/8GQJDb";
+const SIGNATURE_BYTES = [
+  [0, 1, 1, 1, 0, 0, 1, 1], [0, 1, 1, 0, 1, 1, 1, 1], [0, 1, 1, 0, 1, 1, 0, 0], [0, 1, 1, 1, 0, 1, 1, 0], [0, 1, 1, 0, 0, 1, 0, 1],
+  [0, 1, 1, 0, 0, 1, 0, 0], [0, 0, 1, 0, 1, 1, 1, 0], [0, 1, 1, 1, 0, 1, 1, 0], [0, 1, 1, 0, 1, 1, 1, 1], [0, 1, 1, 0, 0, 1, 0, 1],
+];
+const SIGNATURE = `<a class="site-signature" href="${SIGNATURE_URL}" target="_blank" rel="noopener noreferrer" aria-label="Site signature">${SIGNATURE_BYTES.map(
+  (byte) => `<span class="site-signature__byte">${byte.map((bit) => `<span class="site-signature__dot${bit ? " site-signature__dot--one" : ""}"></span>`).join("")}</span>`,
+).join("")}</a>`;
+
 const SECURITY_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "x-robots-tag": "noindex",
@@ -223,13 +242,13 @@ const SECURITY_HEADERS = {
   "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
 };
 
-function shell(title: string, header: string, main: string, bodyClass = ""): string {
+function shell(title: string, header: string, main: string, bodyClass = "", script = ""): string {
   return `<!doctype html><html lang="en-AU"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
 <title>${esc(title)} · Sprigboard</title>
 <link rel="icon" href="data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#3f7d4e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${ICONS.leaf}</svg>`)}">
 <script>${HEAD_JS}</script><style>${CSS}</style></head><body${bodyClass ? ` class="${bodyClass}"` : ""}>
-${header}<main>${main}</main><script>${BODY_JS}</script></body></html>`;
+${header}<main>${main}</main>${SIGNATURE}<script>${BODY_JS}${script}</script></body></html>`;
 }
 
 const flashHtml = (f?: { msg: string; err?: boolean } | null) => (f ? `<div class="flash${f.err ? " err" : ""}" role="status">${esc(f.msg)}</div>` : "");
@@ -237,7 +256,7 @@ const modeBtn = `<button type="button" class="ib mode-btn" id="mode"><span data-
 
 export interface LayoutUser { name: string; email: string; role: string }
 
-export function layout(o: { title: string; path: string; user: LayoutUser; body: string; flash?: { msg: string; err?: boolean } | null; status?: number }): Response {
+export function layout(o: { title: string; path: string; user: LayoutUser; body: string; flash?: { msg: string; err?: boolean } | null; status?: number; script?: string }): Response {
   const items = o.user.role === "owner" ? [...NAV, ["/users", "Users", "users"] as [string, string, string]] : NAV;
   const nav = items.map(([href, label, ic]) => {
     const active = href === "/" ? o.path === "/" || o.path.startsWith("/jobs") : o.path.startsWith(href);
@@ -250,11 +269,11 @@ export function layout(o: { title: string; path: string; user: LayoutUser; body:
 <form method="post" action="/logout" class="inline">${iconBtn({ icon: "logout", label: "Sign out" })}</form>
 <button type="button" class="ib" id="burger" aria-controls="nav" aria-expanded="false" aria-label="Open menu">${icon("menu")}</button>
 ${modeBtn}</div></header>`;
-  return new Response(shell(o.title, header, flashHtml(o.flash) + o.body), { status: o.status ?? 200, headers: SECURITY_HEADERS });
+  return new Response(shell(o.title, header, flashHtml(o.flash) + o.body, "", o.script ?? ""), { status: o.status ?? 200, headers: SECURITY_HEADERS });
 }
 
 /** Sign-in pages: a centred card, no navigation. */
-export function layoutBare(o: { title: string; body: string; flash?: { msg: string; err?: boolean } | null; status?: number }): Response {
+export function layoutBare(o: { title: string; body: string; flash?: { msg: string; err?: boolean } | null; status?: number; script?: string }): Response {
   const header = `<header class="top"><div class="in"><a class="brand" href="/login">${icon("leaf")}Sprigboard</a><span class="spacer"></span>${modeBtn}</div></header>`;
-  return new Response(shell(o.title, header, `<div class="auth">${flashHtml(o.flash)}<div class="card">${o.body}</div></div>`, "bare"), { status: o.status ?? 200, headers: SECURITY_HEADERS });
+  return new Response(shell(o.title, header, `<div class="auth">${flashHtml(o.flash)}<div class="card">${o.body}</div></div>`, "bare", o.script ?? ""), { status: o.status ?? 200, headers: SECURITY_HEADERS });
 }

@@ -4,6 +4,7 @@
 // Sign-in is Sprigboard's own (src/auth.ts): no Cloudflare account needed.
 
 import { accountPage, accountPost, authRoute, currentUser, usersPage, usersPost, type AuthEnv, type User } from "./auth";
+import { passkeyAccountRoute, passkeyLoginRoute } from "./passkeys";
 import { extractPlan, ExtractionError, isSupportedPlan, ITEM_KINDS } from "./extract";
 import {
   addDays, continueFrom, esc, formatDollars, formatNumber, invoiceTotals, matchSymbol, parseDollars,
@@ -738,6 +739,7 @@ export async function route(c: Ctx): Promise<Response> {
 
   if (req.method === "POST") {
     if (p.startsWith("/account/")) return (await accountPost(c)) ?? notFound(c);
+    if (p.startsWith("/passkeys/")) return (await passkeyAccountRoute(env, req, url, c.user)) ?? notFound(c);
     if (p === "/users" || p.startsWith("/users/")) return (await usersPost(c)) ?? notFound(c);
     if (p === "/jobs") return createJob(c);
     if ((r = m(/^\/jobs\/(\d+)$/))) return updateJob(c, +r[1]);
@@ -800,7 +802,7 @@ export default {
     const url = new URL(req.url);
     try {
       if (req.method === "POST" && !sameOrigin(req, url)) return new Response("Cross-site request refused.", { status: 403 });
-      const pub = await authRoute({ env, req, url });
+      const pub = (await authRoute({ env, req, url })) ?? (await passkeyLoginRoute(env, req, url));
       if (pub) return pub;
       const user = await currentUser(env, req);
       if (!user) {
