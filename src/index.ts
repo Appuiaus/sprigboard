@@ -336,7 +336,8 @@ function invoiceFromJobFields(j: Row, st: Record<string, string>): string {
   return `${field("description", "Line description", desc, { full: true })}
     ${field("amount", "Amount (AUD, before GST)", n(j.tier_price) ? (n(j.tier_price) / 100).toFixed(2) : "", { required: true, attrs: 'inputmode="decimal" placeholder="0.00"', hint: j.tier_name ? `From the ${esc(j.tier_name)} size price.` : "Set the job size to fill this in." })}
     ${field("issued_on", "Invoice date", todayBrisbane(), { type: "date" })}
-    <p class="small muted full">${st.gst_registered === "1" ? "GST (10%) is added." : "No GST is added (not registered for GST; change in Settings)."} The invoice gets the next number and is saved as a draft.</p>`;
+    <div class="full">${toggle("add_gst", "Add GST (10%)", st.gst_on_invoices === "1", gstHint(st))}</div>
+    <p class="small muted full">The invoice gets the next number and is saved as a draft.</p>`;
 }
 
 // ---------- Plan files ----------
@@ -544,12 +545,12 @@ async function createInvoiceFromJob(c: Ctx, jobId: number): Promise<Response> {
   const st = await settings(c.env);
   const issued = /^\d{4}-\d{2}-\d{2}$/.test(s(f.get("issued_on"))) ? s(f.get("issued_on")) : todayBrisbane();
   const lines: InvoiceLine[] = [{ description: s(f.get("description")).trim() || `Presentation drawing ${s(j.job_number)}`, qty: 1, unit_cents: cents }];
-  const gst = st.gst_registered === "1";
+  const gst = f.get("add_gst") === "1";
   const t = invoiceTotals(lines, gst);
   const num = await nextNumber(c.env, "invoice");
   const row = await c.env.DB.prepare(
-    `INSERT INTO invoices (number, job_id, client_id, issued_on, due_on, lines_json, gst_registered, subtotal_cents, gst_cents, total_cents) VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`,
-  ).bind(num, jobId, j.client_id ?? null, issued, addDays(issued, Number(st.payment_terms_days || 14)), JSON.stringify(lines), gst ? 1 : 0, t.subtotal_cents, t.gst_cents, t.total_cents).first<{ id: number }>();
+    `INSERT INTO invoices (number, job_id, client_id, issued_on, due_on, lines_json, gst_registered, business_gst_registered, subtotal_cents, gst_cents, total_cents) VALUES (?,?,?,?,?,?,?,?,?,?,?) RETURNING id`,
+  ).bind(num, jobId, j.client_id ?? null, issued, addDays(issued, Number(st.payment_terms_days || 14)), JSON.stringify(lines), gst ? 1 : 0, st.gst_registered === "1" ? 1 : 0, t.subtotal_cents, t.gst_cents, t.total_cents).first<{ id: number }>();
   await c.env.DB.prepare(`UPDATE jobs SET status='invoiced' WHERE id=? AND status <> 'done'`).bind(jobId).run();
   return redirect(`/invoices/${row!.id}`, `Invoice ${num} created as a draft.`);
 }
@@ -589,10 +590,11 @@ async function invoicePage(c: Ctx, id: number): Promise<Response> {
   const st = await settings(c.env);
   const lines = JSON.parse(s(i.lines_json)) as InvoiceLine[];
   const gst = n(i.gst_registered) === 1;
+  const taxInvoice = gst && n(i.business_gst_registered) === 1;
   const lineRows = lines.map((l) => `<tr><td>${esc(l.description)}</td><td class="num">${l.qty}</td><td class="num">${formatDollars(l.unit_cents)}</td><td class="num">${formatDollars(Math.round(l.qty * l.unit_cents))}</td></tr>`).join("");
   const linesText = lines.map((l) => `${l.description} | ${(l.unit_cents / 100).toFixed(2)}${l.qty !== 1 ? ` | ${l.qty}` : ""}`).join("\n");
   const doc = `<article class="invoice">
-    <header><div>${st.business_logo_key ? `<img src="/settings/logo" alt="${esc(st.business_name)}" style="max-height:64px;max-width:220px;display:block;margin-bottom:12px">` : ""}<h1 style="margin:0">${gst ? "Tax invoice" : "Invoice"}</h1><div class="muted">${esc(i.number)}</div></div>
+    <header><div>${st.business_logo_key ? `<img src="/settings/logo" alt="${esc(st.business_name)}" style="max-height:64px;max-width:220px;display:block;margin-bottom:12px">` : ""}<h1 style="margin:0">${taxInvoice ? "Tax invoice" : "Invoice"}</h1><div class="muted">${esc(i.number)}</div></div>
       <div style="text-align:right"><b>${esc(st.business_name)}</b>${st.abn ? `<div>ABN ${esc(st.abn)}</div>` : ""}
       ${st.address ? `<div class="pre">${esc(st.address)}</div>` : ""}${st.email ? `<div>${esc(st.email)}</div>` : ""}${st.phone ? `<div>${esc(st.phone)}</div>` : ""}</div></header>
     <section class="meta"><div><div class="muted small">Bill to</div><b>${esc(i.client_name) || "—"}</b>${i.client_contact ? `<div>${esc(i.client_contact)}</div>` : ""}${i.client_address ? `<div class="pre">${esc(i.client_address)}</div>` : ""}${i.client_email ? `<div>${esc(i.client_email)}</div>` : ""}</div>
@@ -620,6 +622,7 @@ async function invoicePage(c: Ctx, id: number): Promise<Response> {
     ${formDialog("edit-inv", `Edit ${esc(i.number)}`, `/invoices/${id}`, `${pills("status", "Status", INVOICE_STATUSES, s(i.status))}
       ${field("issued_on", "Invoice date", s(i.issued_on), { type: "date" })}${field("due_on", "Due date", s(i.due_on), { type: "date" })}
       ${area("lines", "Lines", linesText, { rows: 4, hint: "One line each: description | amount | quantity (quantity is optional, default 1)." })}
+      <div class="full">${toggle("add_gst", "Add GST (10%)", gst, gstHint(st, n(i.business_gst_registered) === 1))}</div>
       ${area("notes", "Notes on the invoice", s(i.notes), { rows: 2 })}`)}
     ${confirmDelete("del-inv", `invoice ${s(i.number)}`, `/invoices/${id}/delete`)}${autoPrint}
     ${dialog("email-inv", `Email ${esc(i.number)}?`, `<form method="post" action="/invoices/${id}/email">
@@ -632,10 +635,11 @@ async function invoicePage(c: Ctx, id: number): Promise<Response> {
 /** The invoice as an email: inline styles only, so it renders in mail clients. */
 function invoiceEmailHtml(i: Row, st: Record<string, string>, lines: InvoiceLine[], message: string): string {
   const gst = n(i.gst_registered) === 1;
+  const taxInvoice = gst && n(i.business_gst_registered) === 1;
   const td = 'style="padding:8px;border-bottom:1px solid #e3e6df"', tdr = 'style="padding:8px;border-bottom:1px solid #e3e6df;text-align:right"';
   return `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:640px;margin:0 auto;padding:24px;color:#1d231c">
   ${message ? `<p style="white-space:pre-line">${esc(message)}</p><hr style="border:0;border-top:1px solid #e3e6df;margin:24px 0">` : ""}
-  <table width="100%" style="border-collapse:collapse"><tr><td><h1 style="margin:0;font-size:22px">${gst ? "Tax invoice" : "Invoice"} ${esc(i.number)}</h1>
+  <table width="100%" style="border-collapse:collapse"><tr><td><h1 style="margin:0;font-size:22px">${taxInvoice ? "Tax invoice" : "Invoice"} ${esc(i.number)}</h1>
     <div style="color:#5f6b5c">Issued ${esc(i.issued_on)} · Due ${esc(i.due_on)}${i.job_number ? ` · Job ${esc(i.job_number)}` : ""}</div></td>
     <td style="text-align:right"><b>${esc(st.business_name)}</b>${st.abn ? `<br>ABN ${esc(st.abn)}` : ""}${st.email ? `<br>${esc(st.email)}` : ""}${st.phone ? `<br>${esc(st.phone)}` : ""}</td></tr></table>
   <p><span style="color:#5f6b5c">Bill to</span><br><b>${esc(i.client_name)}</b>${i.client_contact ? `<br>${esc(i.client_contact)}` : ""}</p>
@@ -662,10 +666,11 @@ async function emailInvoice(c: Ctx, id: number): Promise<Response> {
   const lines = JSON.parse(s(i.lines_json)) as InvoiceLine[];
   const message = s((await c.req.formData()).get("message")).trim().slice(0, 2000);
   const gst = n(i.gst_registered) === 1;
+  const taxInvoice = gst && n(i.business_gst_registered) === 1;
   const sent = await sendMail(c.env, {
     to: s(i.client_email), replyTo: st.email || undefined,
-    subject: `${gst ? "Tax invoice" : "Invoice"} ${s(i.number)} from ${st.business_name}`,
-    text: `${message ? message + "\n\n" : ""}${gst ? "Tax invoice" : "Invoice"} ${s(i.number)}\nIssued ${s(i.issued_on)}, due ${s(i.due_on)}\n\n${lines.map((l) => `${l.description}: ${formatDollars(Math.round(l.qty * l.unit_cents))}`).join("\n")}\n\nTotal${gst ? " (incl. GST)" : ""}: ${formatDollars(n(i.total_cents))}\n${st.payment_details ? `\nPayment details:\n${st.payment_details}\n` : ""}`,
+    subject: `${taxInvoice ? "Tax invoice" : "Invoice"} ${s(i.number)} from ${st.business_name}`,
+    text: `${message ? message + "\n\n" : ""}${taxInvoice ? "Tax invoice" : "Invoice"} ${s(i.number)}\nIssued ${s(i.issued_on)}, due ${s(i.due_on)}\n\n${lines.map((l) => `${l.description}: ${formatDollars(Math.round(l.qty * l.unit_cents))}`).join("\n")}\n\nTotal${gst ? " (incl. GST)" : ""}: ${formatDollars(n(i.total_cents))}\n${st.payment_details ? `\nPayment details:\n${st.payment_details}\n` : ""}`,
     html: invoiceEmailHtml(i, st, lines, message),
   });
   if (!sent) return redirect(`/invoices/${id}`, "The email couldn't be sent. Try again, or print or save it as a PDF.", true);
@@ -688,16 +693,17 @@ export function parseLines(text: string): InvoiceLine[] | null {
 
 async function updateInvoice(c: Ctx, id: number): Promise<Response> {
   const f = await c.req.formData();
-  const inv = await c.env.DB.prepare(`SELECT gst_registered FROM invoices WHERE id=? AND deleted_at IS NULL`).bind(id).first<Row>();
+  const inv = await c.env.DB.prepare(`SELECT id FROM invoices WHERE id=? AND deleted_at IS NULL`).bind(id).first<Row>();
   if (!inv) return notFound(c, "invoice");
   const lines = parseLines(s(f.get("lines")));
   if (!lines) return redirect(`/invoices/${id}`, "Each line needs a description and an amount, like: Drawing | 250.00", true);
-  const t = invoiceTotals(lines, n(inv.gst_registered) === 1);
+  const addGst = f.get("add_gst") === "1";
+  const t = invoiceTotals(lines, addGst);
   const status = INVOICE_STATUSES.some(([k]) => k === s(f.get("status"))) ? s(f.get("status")) : "draft";
   const date = (k: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s(f.get(k))) ? s(f.get(k)) : null);
   await c.env.DB.prepare(
-    `UPDATE invoices SET status=?, issued_on=COALESCE(?, issued_on), due_on=COALESCE(?, due_on), lines_json=?, subtotal_cents=?, gst_cents=?, total_cents=?, notes=? WHERE id=?`,
-  ).bind(status, date("issued_on"), date("due_on"), JSON.stringify(lines), t.subtotal_cents, t.gst_cents, t.total_cents, s(f.get("notes")).trim(), id).run();
+    `UPDATE invoices SET status=?, issued_on=COALESCE(?, issued_on), due_on=COALESCE(?, due_on), lines_json=?, gst_registered=?, subtotal_cents=?, gst_cents=?, total_cents=?, notes=? WHERE id=?`,
+  ).bind(status, date("issued_on"), date("due_on"), JSON.stringify(lines), addGst ? 1 : 0, t.subtotal_cents, t.gst_cents, t.total_cents, s(f.get("notes")).trim(), id).run();
   return redirect(`/invoices/${id}`, "Invoice saved.");
 }
 
@@ -742,7 +748,9 @@ async function settingsPage(c: Ctx): Promise<Response> {
       ${field("business_name", "Business name", st.business_name, { required: true })}${field("abn", "ABN", st.abn, { attrs: 'inputmode="numeric"' })}
       ${field("email", "Email", st.email, { type: "email" })}${field("phone", "Phone", st.phone)}
       ${area("address", "Business address", st.address, { rows: 2 })}
-      <div class="full">${toggle("gst_registered", "Registered for GST", st.gst_registered === "1", "When on, new invoices add 10% GST and are titled Tax invoice. Existing invoices keep their GST setting.")}</div>
+      <div class="full">${toggle("gst_registered", "Registered for GST", st.gst_registered === "1", "Your business is registered for GST. Invoices that add GST are then titled Tax invoice.")}</div>
+      <div class="full">${toggle("gst_on_invoices", "Add GST to invoices", st.gst_on_invoices === "1", "Adds 10% GST on top of the price on new invoices, separately from the setting above. You can still switch GST on or off for each invoice. Existing invoices don't change.")}
+        ${st.gst_on_invoices === "1" && st.gst_registered !== "1" ? `<p class="flash err small" style="margin-top:8px">GST is being added but the business isn't marked as registered for GST. In Australia only GST-registered businesses may charge GST.</p>` : ""}</div>
       ${field("payment_terms_days", "Payment terms (days)", st.payment_terms_days, { type: "number", attrs: 'min="0" max="120"' })}
       ${field("drawn_by", "Drawn by (title block)", st.drawn_by)}
       ${area("payment_details", "Payment details", st.payment_details, { rows: 3, hint: "Bank name, BSB and account number, printed on every invoice." })}
@@ -764,6 +772,7 @@ async function saveSettings(c: Ctx): Promise<Response> {
   const f = await c.req.formData();
   const stmts = SETTING_FIELDS.map((k) => c.env.DB.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(k, s(f.get(k)).trim()));
   stmts.push(c.env.DB.prepare(`UPDATE settings SET value=? WHERE key='gst_registered'`).bind(f.get("gst_registered") === "1" ? "1" : "0"));
+  stmts.push(c.env.DB.prepare(`INSERT INTO settings (key, value) VALUES ('gst_on_invoices', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(f.get("gst_on_invoices") === "1" ? "1" : "0"));
   const jobNext = Number(s(f.get("job_next")));
   if (Number.isInteger(jobNext) && jobNext > 0) stmts.push(c.env.DB.prepare(`UPDATE settings SET value=? WHERE key='job_next'`).bind(String(jobNext)));
   const last = s(f.get("invoice_last")).trim();
@@ -790,6 +799,13 @@ async function saveTier(c: Ctx, id: number | null): Promise<Response> {
   if (id === null) await c.env.DB.prepare(`INSERT INTO size_tiers (name, description, price_cents, sort) VALUES (?,?,?,?)`).bind(name, s(f.get("description")).trim(), price, sort).run();
   else await c.env.DB.prepare(`UPDATE size_tiers SET name=?, description=?, price_cents=?, sort=? WHERE id=?`).bind(name, s(f.get("description")).trim(), price, sort, id).run();
   return redirect("/settings", `${name} saved.`);
+}
+
+/** Explains the per-invoice GST switch, warning when GST would be charged without registration. */
+function gstHint(st: Record<string, string>, registeredAtTheTime = st.gst_registered === "1"): string {
+  return registeredAtTheTime
+    ? "Your default is set in Settings → Add GST to invoices."
+    : "Your business isn't marked as registered for GST. In Australia only GST-registered businesses may charge it.";
 }
 
 // ---------- Getting started ----------

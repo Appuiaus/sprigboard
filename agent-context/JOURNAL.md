@@ -2,6 +2,19 @@
 
 Curated, newest first: what each session did and why, with gotchas for the next session.
 
+## 2026-11-07 (evening): GST split into two settings plus a per-invoice switch
+
+- **Pedro:** the setting for adding GST to invoices must be independent of whether GST is "enabled". The two are now:
+  - **Registered for GST** (`gst_registered`): a fact about the business.
+  - **Add GST to invoices** (`gst_on_invoices`): the default for new invoices.
+
+  Each invoice has its own "Add GST (10%)" switch, in both the create and edit dialogs.
+- **Columns:** `invoices.gst_registered` still means "this invoice adds GST" (kept to avoid a data migration). A
+  new column, `business_gst_registered`, records whether the business was registered when the invoice was made.
+- **Title:** an invoice is a "Tax invoice" only when both are true.
+- **Warning:** adding GST while not registered is allowed, but shows a warning (Australian rule).
+  Migration 0005 copies the old setting into `gst_on_invoices`, so nothing changes until Jamie switches it.
+
 ## 2026-11-07 (later): time tracking, D1 file fallback, invoice logo and email, onboarding
 
 - **Time per job** (`time_entries`): a start/stop timer (one running timer per person; starting another stops the
