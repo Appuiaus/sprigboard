@@ -171,13 +171,18 @@ tr.done td:not(.actions){color:var(--muted)}tr.done .lbl{text-decoration:line-th
 button.passkey{gap:8px;font-weight:600;border-color:var(--accent);color:var(--accent)}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;margin:16px 0 8px}.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
 #passkey-msg,#passkey-add-msg{margin-top:8px}.grow{margin-right:auto}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:8px 0 16px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;text-decoration:none;display:flex;flex-direction:column}
+.stat b{font-size:22px;font-variant-numeric:tabular-nums}.stat span{color:var(--muted);font-size:13px}.stat:hover{border-color:var(--accent)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}.filters .fld:first-of-type{flex:1;min-width:220px}.filters select{width:auto}
+.btn.plain{border-color:transparent;background:transparent;color:var(--muted)}
 input.code{font-size:24px;letter-spacing:8px;text-align:center;font-variant-numeric:tabular-nums}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 @media (max-width:720px){
  .top .who span{display:none}#burger{display:inline-flex}
  nav.main{display:none;position:absolute;left:0;right:0;top:100%;flex-direction:column;background:var(--bg);border-bottom:1px solid var(--line);padding:8px 16px;margin:0}
  nav.main.open{display:flex}
- .grid{grid-template-columns:1fr}
+ .grid{grid-template-columns:1fr}.stats{grid-template-columns:1fr 1fr}.filters .fld{flex:1 1 100%}
  table,thead,tbody,tr,td{display:block}thead{display:none}
  tr{border-bottom:1px solid var(--line);padding:6px 0}tbody tr:last-child{border-bottom:0}
  td{border:0;padding:3px 12px;display:flex;gap:12px;justify-content:space-between;text-align:right}

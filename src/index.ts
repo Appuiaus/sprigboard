@@ -7,7 +7,7 @@ import { accountPage, accountPost, authRoute, currentUser, usersPage, usersPost,
 import { passkeyAccountRoute, passkeyLoginRoute } from "./passkeys";
 import { extractPlan, ExtractionError, isSupportedPlan, ITEM_KINDS } from "./extract";
 import {
-  addDays, continueFrom, esc, formatDollars, formatNumber, invoiceTotals, matchSymbol, parseDollars,
+  addDays, continueFrom, normalisePlant, plantRowsFromCsv, esc, formatDollars, formatNumber, invoiceTotals, matchSymbol, parseDollars,
   titleBlockCsv, titleBlockXml, toCsv, todayBrisbane, type InvoiceLine, type Symbol, type TitleBlock,
 } from "./lib";
 import {
@@ -101,16 +101,32 @@ const isImage = (mime: string) => /^image\/(png|jpeg|gif|webp|svg\+xml)$/.test(m
 
 async function jobsPage(c: Ctx): Promise<Response> {
   const show = c.url.searchParams.get("show") ?? "open";
-  const where = show === "all" ? "" : "AND j.status <> 'done'";
+  const q = (c.url.searchParams.get("q") ?? "").trim().slice(0, 100);
+  const status = c.url.searchParams.get("status") ?? "";
+  const conds: string[] = [];
+  const args: unknown[] = [];
+  if (JOB_STATUSES.some(([k]) => k === status)) { conds.push("j.status = ?"); args.push(status); }
+  else if (show !== "all") conds.push("j.status <> 'done'");
+  if (q) {
+    // Escape LIKE wildcards in what Jamie typed so "50%" searches for "50%".
+    const like = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+    conds.push(`(${["j.job_number", "j.project", "j.site_address", "c.name", "j.scope"].map((col) => `${col} LIKE ? ESCAPE '\\'`).join(" OR ")})`);
+    args.push(like, like, like, like, like);
+  }
+  const where = conds.map((x) => `AND ${x}`).join(" ");
   const { results } = await c.env.DB.prepare(
     `SELECT j.*, c.name AS client_name, t.name AS tier_name,
             (SELECT COUNT(*) FROM plan_files f WHERE f.job_id = j.id AND f.deleted_at IS NULL) AS files,
             (SELECT COUNT(*) FROM checklist_items i WHERE i.job_id = j.id AND i.deleted_at IS NULL) AS items,
             (SELECT COUNT(*) FROM checklist_items i WHERE i.job_id = j.id AND i.deleted_at IS NULL AND i.done = 1) AS done_items
        FROM jobs j LEFT JOIN clients c ON c.id = j.client_id LEFT JOIN size_tiers t ON t.id = j.tier_id
-      WHERE j.deleted_at IS NULL ${where} ORDER BY j.id DESC`,
-  ).all<Row>();
+      WHERE j.deleted_at IS NULL ${where} ORDER BY j.id DESC LIMIT 500`,
+  ).bind(...args).all<Row>();
   const [clients, tiers] = await Promise.all([clientsList(c.env), tiersList(c.env)]);
+  const owing = await c.env.DB.prepare(`SELECT COALESCE(SUM(total_cents),0) AS t, COUNT(*) AS n FROM invoices WHERE deleted_at IS NULL AND status <> 'paid'`).first<{ t: number; n: number }>();
+  const counts = await c.env.DB.prepare(`SELECT status, COUNT(*) AS n FROM jobs WHERE deleted_at IS NULL GROUP BY status`).all<{ status: string; n: number }>();
+  const count = (k: string) => counts.results.find((r) => r.status === k)?.n ?? 0;
+  const filtered = !!q || !!status;
   const rows = results.map((j) => [
     `<a href="/jobs/${j.id}"><b>${esc(j.job_number)}</b></a>`,
     `${esc(j.project) || '<span class="muted">No project name</span>'}<div class="muted small">${esc(j.site_address)}</div>`,
@@ -123,10 +139,17 @@ async function jobsPage(c: Ctx): Promise<Response> {
   ]);
   const dels = results.map((j) => confirmDelete(`del-job-${j.id}`, `job ${s(j.job_number)}`, `/jobs/${j.id}/delete`)).join("");
   const body = `<div class="bar"><h1>Jobs</h1>
-    <a class="btn" href="/?show=${show === "all" ? "open" : "all"}">${show === "all" ? "Hide done jobs" : "Show done jobs"}</a>
     ${iconBtn({ icon: "plus", label: "New job", dialog: "new-job", attrs: 'style="width:38px;height:38px"' }).replace('class="ib"', 'class="ib primary"')}</div>
     <p class="sub">Each job gets the next job number. Upload the plan, let Claude read it, then tick items off as you draw.</p>
-    ${table(["Job", "Project and site", "Client", "Size", "Checklist", "Status", "Actions"], rows, "No jobs yet. Press + to add the first one.")}
+    <div class="stats"><a class="stat" href="/?status=new"><b>${count("new")}</b><span>New</span></a><a class="stat" href="/?status=drawing"><b>${count("drawing")}</b><span>Drawing</span></a>
+      <a class="stat" href="/?status=sent"><b>${count("sent")}</b><span>Sent to client</span></a><a class="stat" href="/invoices"><b>${formatDollars(owing?.t ?? 0)}</b><span>${owing?.n ?? 0} invoice${owing?.n === 1 ? "" : "s"} unpaid</span></a></div>
+    <form class="filters" method="get" action="/" role="search">
+      <label class="fld"><span class="sr">Search jobs</span><input type="search" name="q" value="${esc(q)}" placeholder="Search job number, project, address or client"></label>
+      <label class="fld"><span class="sr">Status</span><select name="status"><option value="">${show === "all" ? "All statuses" : "Open jobs"}</option>${JOB_STATUSES.map(([k, t]) => `<option value="${k}"${k === status ? " selected" : ""}>${t}</option>`).join("")}</select></label>
+      ${show === "all" ? '<input type="hidden" name="show" value="all">' : ""}
+      <button class="btn">Search</button>${filtered ? '<a class="btn" href="/">Clear</a>' : ""}
+      <a class="btn plain" href="/?show=${show === "all" ? "open" : "all"}${q ? `&q=${encodeURIComponent(q)}` : ""}">${show === "all" ? "Hide done jobs" : "Show done jobs"}</a></form>
+    ${table(["Job", "Project and site", "Client", "Size", "Checklist", "Status", "Actions"], rows, filtered ? "No jobs match. Try a different search." : "No jobs yet. Press + to add the first one.")}
     ${formDialog("new-job", "New job", "/jobs", jobFields({}, clients, tiers), "Create job")}${dels}`;
   return layout({ title: "Jobs", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
@@ -405,10 +428,12 @@ async function plantsPage(c: Ctx): Promise<Response> {
       iconBtn({ icon: "bin", label: "Delete plant", dialog: `del-plant-${p.id}`, danger: true }),
   ]);
   const dlgs = syms.map((p) => formDialog(`edit-plant-${p.id}`, "Edit plant", `/plants/${p.id}`, plantFields(p), "Save", "multipart/form-data") + confirmDelete(`del-plant-${p.id}`, s(p.botanical), `/plants/${p.id}/delete`)).join("");
-  const body = `<div class="bar"><h1>Plant library</h1>${iconBtn({ icon: "plus", label: "Add a plant", dialog: "new-plant" }).replace('class="ib"', 'class="ib primary"')}</div>
+  const body = `<div class="bar"><h1>Plant library</h1>${iconBtn({ icon: "upload", label: "Import plants from a CSV file", dialog: "import-plants" })}${iconBtn({ icon: "download", label: "Download the plant list (CSV)", href: "/plants.csv", download: true })}${iconBtn({ icon: "plus", label: "Add a plant", dialog: "new-plant" }).replace('class="ib"', 'class="ib primary"')}</div>
     <p class="sub">Your plant graphics. Checklist plants are matched by code, then botanical or common name, then genus and species.</p>
     ${table(["Symbol", "Botanical name", "Common name", "Code", "Actions"], rows, "No plants yet. Add your plant graphics so jobs can match them.")}
-    ${formDialog("new-plant", "Add a plant", "/plants", plantFields({}), "Add", "multipart/form-data")}${dlgs}`;
+    ${formDialog("new-plant", "Add a plant", "/plants", plantFields({}), "Add", "multipart/form-data")}
+    ${formDialog("import-plants", "Import plants", "/plants/import", `<label class="fld full"><span>CSV file</span><input type="file" name="file" accept=".csv,text/csv" required>
+      <small>Columns: <b>botanical</b> (required), <b>common</b>, <b>code</b>. The first row is the header. Plants already in the library (same botanical name) are updated, not duplicated. Add symbol graphics afterwards with the pencil.</small></label>`, "Import", "multipart/form-data")}${dlgs}`;
   return layout({ title: "Plant library", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
@@ -620,7 +645,7 @@ async function settingsPage(c: Ctx): Promise<Response> {
   const tierRows = tiers.map((t) => [`<b>${esc(t.name)}</b>`, esc(t.description), `<span class="num">${n(t.price_cents) ? formatDollars(n(t.price_cents)) : '<span class="muted">Not set</span>'}</span>`,
     iconBtn({ icon: "pencil", label: `Edit ${s(t.name)}`, dialog: `edit-tier-${t.id}` }) + iconBtn({ icon: "bin", label: `Delete ${s(t.name)}`, dialog: `del-tier-${t.id}`, danger: true })]);
   const tierDlgs = tiers.map((t) => formDialog(`edit-tier-${t.id}`, `Edit ${esc(t.name)}`, `/tiers/${t.id}`, tierFields(t)) + confirmDelete(`del-tier-${t.id}`, `the ${s(t.name)} size`, `/tiers/${t.id}/delete`)).join("");
-  const body = `<h1>Settings</h1>
+  const body = `<div class="bar"><h1>Settings</h1>${c.user.role === "owner" ? iconBtn({ icon: "download", label: "Download all Sprigboard data (JSON backup)", href: "/settings/export.json", download: true }) : ""}</div>
     <div class="bar"><h2>Job sizes and prices</h2>${iconBtn({ icon: "plus", label: "Add a size", dialog: "new-tier" })}</div>
     <p class="sub">You price by the size of the job, not by the hour. Time a few practice jobs, then set a price for each size.</p>
     ${table(["Size", "What it covers", "Price (before GST)", "Actions"], tierRows, "No sizes yet.")}
@@ -679,6 +704,35 @@ async function saveTier(c: Ctx, id: number | null): Promise<Response> {
   return redirect("/settings", `${name} saved.`);
 }
 
+// ---------- Plant import and data export ----------
+
+async function importPlants(c: Ctx): Promise<Response> {
+  const file = (await c.req.formData()).get("file");
+  if (!file || typeof file === "string" || file.size === 0) return redirect("/plants", "Choose a CSV file.", true);
+  if (file.size > 1024 * 1024) return redirect("/plants", "That file is too big (1 MB at most).", true);
+  const parsed = plantRowsFromCsv(await file.text());
+  if ("error" in parsed) return redirect("/plants", parsed.error, true);
+  const existing = new Map((await symbolsList(c.env)).map((x) => [normalisePlant(s(x.botanical)), Number(x.id)]));
+  let added = 0, updated = 0;
+  const stmts: D1PreparedStatement[] = [];
+  for (const r of parsed.rows) {
+    const id = existing.get(normalisePlant(r.botanical));
+    if (id) { stmts.push(c.env.DB.prepare(`UPDATE plant_symbols SET botanical=?, common=CASE WHEN ?='' THEN common ELSE ? END, code=CASE WHEN ?='' THEN code ELSE ? END WHERE id=?`).bind(r.botanical, r.common, r.common, r.code, r.code, id)); updated++; }
+    else { stmts.push(c.env.DB.prepare(`INSERT INTO plant_symbols (botanical, common, code) VALUES (?,?,?)`).bind(r.botanical, r.common, r.code)); existing.set(normalisePlant(r.botanical), -1); added++; }
+  }
+  for (let i = 0; i < stmts.length; i += 50) await c.env.DB.batch(stmts.slice(i, i + 50));
+  return redirect("/plants", `Imported ${added} new plant${added === 1 ? "" : "s"}${updated ? `, updated ${updated}` : ""}.${parsed.skipped ? ` Skipped ${parsed.skipped} row${parsed.skipped === 1 ? "" : "s"} without a botanical name.` : ""}`);
+}
+
+async function exportData(c: Ctx): Promise<Response> {
+  const tables = ["settings", "clients", "size_tiers", "jobs", "plan_files", "checklist_items", "plant_symbols", "invoices"];
+  const out: Record<string, unknown> = { exported_at: new Date().toISOString(), app: "Sprigboard" };
+  for (const t of tables) out[t] = (await c.env.DB.prepare(`SELECT * FROM ${t}`).all()).results;
+  // Accounts without any secrets (no password hashes, sessions, passkeys or tokens).
+  out.users = (await c.env.DB.prepare(`SELECT id, email, name, role, created_at, last_login_at, deleted_at FROM users`).all()).results;
+  return download(JSON.stringify(out, null, 2), `sprigboard-export-${todayBrisbane()}.json`, "application/json; charset=utf-8");
+}
+
 // ---------- Router ----------
 
 async function softDelete(env: Env, table: string, id: number) {
@@ -728,6 +782,11 @@ export async function route(c: Ctx): Promise<Response> {
       return serveObject(env, cl?.logo_key ? s(cl.logo_key) : null, "logo", obj?.httpMetadata?.contentType ?? "image/png");
     }
     if (p === "/plants") return plantsPage(c);
+    if (p === "/plants.csv") {
+      const syms = await symbolsList(env);
+      return download(toCsv([["botanical", "common", "code", "symbol_file"], ...syms.map((x) => [s(x.botanical), s(x.common), s(x.code), s(x.filename)])]), "plant-library.csv", "text/csv; charset=utf-8");
+    }
+    if (p === "/settings/export.json") return c.user.role === "owner" ? exportData(c) : notFound(c);
     if (p === "/clients") return clientsPage(c);
     if (p === "/invoices") return invoicesPage(c);
     if ((r = m(/^\/invoices\/(\d+)$/))) return invoicePage(c, +r[1]);
@@ -781,6 +840,7 @@ export async function route(c: Ctx): Promise<Response> {
       return redirect(`/jobs/${it.job_id}`, "Item saved.");
     }
     if (p === "/plants") return savePlant(c, null);
+    if (p === "/plants/import") return importPlants(c);
     if ((r = m(/^\/plants\/(\d+)\/delete$/))) { await softDelete(env, "plant_symbols", +r[1]); return redirect("/plants", "Plant deleted."); }
     if ((r = m(/^\/plants\/(\d+)$/))) return savePlant(c, +r[1]);
     if (p === "/clients") return saveClient(c, null);

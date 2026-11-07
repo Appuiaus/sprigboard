@@ -155,3 +155,44 @@ export function matchSymbol(label: string, symbols: Symbol[]): { symbol: Symbol;
   }
   return null;
 }
+
+// ---------- CSV import ----------
+
+/** RFC 4180-ish CSV parser: quoted fields, doubled quotes, commas and newlines inside quotes. */
+export function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [], cell = "", quoted = false;
+  const src = text.replace(/^\uFEFF/, "");
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quoted) {
+      if (ch === '"') { if (src[i + 1] === '"') { cell += '"'; i++; } else quoted = false; }
+      else cell += ch;
+    } else if (ch === '"') quoted = true;
+    else if (ch === ",") { row.push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && src[i + 1] === "\n") i++;
+      row.push(cell); rows.push(row); row = []; cell = "";
+    } else cell += ch;
+  }
+  if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter((r) => r.some((c) => c.trim() !== ""));
+}
+
+/** Reads botanical/common/code columns by header name (case-insensitive; "name" also means botanical). */
+export function plantRowsFromCsv(text: string): { rows: { botanical: string; common: string; code: string }[]; skipped: number } | { error: string } {
+  const all = parseCsv(text);
+  if (all.length < 2) return { error: "The file needs a header row and at least one plant." };
+  const head = all[0].map((h) => h.trim().toLowerCase());
+  const col = (...names: string[]) => head.findIndex((h) => names.includes(h));
+  const b = col("botanical", "botanical name", "name", "plant"), cm = col("common", "common name"), cd = col("code", "plan code");
+  if (b < 0) return { error: 'Add a "botanical" column header to the first row.' };
+  if (all.length - 1 > 2000) return { error: "Import at most 2000 plants at a time." };
+  let skipped = 0;
+  const rows = all.slice(1).flatMap((r) => {
+    const botanical = (r[b] ?? "").trim().slice(0, 200);
+    if (!botanical) { skipped++; return []; }
+    return [{ botanical, common: cm >= 0 ? (r[cm] ?? "").trim().slice(0, 200) : "", code: cd >= 0 ? (r[cd] ?? "").trim().slice(0, 40) : "" }];
+  });
+  return { rows, skipped };
+}

@@ -93,3 +93,19 @@ describe("plant matching", () => {
     expect(matchSymbol("Callistemon viminalis", syms)).toBeNull();
   });
 });
+
+import { parseCsv, plantRowsFromCsv } from "../src/lib";
+
+describe("csv import", () => {
+  it("parses quotes, commas and newlines", () => {
+    expect(parseCsv('﻿a,b\r\n"x, y","say ""hi""\nthere"\n\n')).toEqual([["a", "b"], ["x, y", 'say "hi"\nthere']]);
+  });
+  it("reads plant columns by header name", () => {
+    const r = plantRowsFromCsv("Code,Botanical name,Common\nLT,Lomandra 'Tanika',Mat rush\n,,\nWF,,Coastal rosemary\n");
+    expect(r).toEqual({ rows: [{ botanical: "Lomandra 'Tanika'", common: "Mat rush", code: "LT" }], skipped: 1 });
+  });
+  it("explains a missing header", () => {
+    expect(plantRowsFromCsv("name2,common\nx,y")).toEqual({ error: expect.stringContaining("botanical") });
+    expect(plantRowsFromCsv("botanical")).toEqual({ error: expect.stringContaining("header row") });
+  });
+});
