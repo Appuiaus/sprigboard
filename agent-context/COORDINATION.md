@@ -26,4 +26,9 @@ destination, so bidsidekick.appui.com.au answers 403 "Missing Access token" to e
 dashboard (the token has no Access scope): point that app at the `bidsidekick` Worker plus the public hostname
 `bidsidekick.appui.com.au`, and keep its AUD.
 
+Note: velosolabs main now has a narrow BidSidekick sign-in-code email relay on the hub (VLABS-295, `app/relay.py`), so
+another session may be moving BidSidekick to its own sign-in; check that before fixing its Access app. That relay
+could be generalised for Sprigboard (codes plus reset and invite links) as an alternative to Mailjet secrets on Ben's
+Worker, but that's a hub PR for Pedro to merge.
+
 Gotchas: `BEN_CLOUDFLARE_ACCOUNT_ID` has a typo (take the ID from the zone). The repo is public.
