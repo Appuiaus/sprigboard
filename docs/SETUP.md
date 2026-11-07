@@ -34,7 +34,7 @@ passwords, codes, links and session tokens are stored.
 | Name | Kind | Value |
 |---|---|---|
 | `APP_URL` | var (wrangler.jsonc) | `https://sprigboard.appui.com.au`. Used for emailed links and as the passkey domain |
-| `MAIL_FROM` | var (wrangler.jsonc) | `Sprigboard <noreply@velosolabs.com>`. Must be a sender validated in Mailjet |
+| `MAIL_FROM` | var (wrangler.jsonc) | `Sprigboard <noreply@velosolabs.com>` for now (velosolabs Mailjet). It must be a sender validated in Mailjet. An appui.com.au sender is to do: VLABS-296 |
 | `PASSWORD_ITERATIONS` | var (wrangler.jsonc) | `100000` |
 | `BOOTSTRAP_EMAILS` | **secret**, set | `pedro@veloso.dev,bhmorg82@gmail.com`. These may sign in by code before they have an account, and become owners |
 | `MAILJET_API_KEY`, `MAILJET_API_SECRET` | **secret, owner to add** | The same Mailjet API key and secret as velosolabs' SMTP login |

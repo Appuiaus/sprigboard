@@ -11,6 +11,7 @@ https://sprigboard.appui.com.au is deployed with Sprigboard's own sign-in: passw
 reset and invites. **Cloudflare Access is no longer used**, so don't create an Access app for sprigboard. Owner
 steps, in order:
 
+0. **Later (Pedro), VLABS-296:** an appui.com.au email sender for Ben's apps. Until then Sprigboard uses the velosolabs Mailjet account (Pedro's decision, 2026-11-07).
 1. **Mailjet secrets (Pedro):** add `MAILJET_API_KEY` and `MAILJET_API_SECRET` to the sprigboard Worker
    (`wrangler secret put` or the dashboard). Use the velosolabs Mailjet key, with sender
    `noreply@velosolabs.com` (it must be validated in Mailjet). **Until then nobody can sign in by code.** The
