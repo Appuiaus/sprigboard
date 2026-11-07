@@ -136,3 +136,20 @@ describe("time", () => {
   });
   it("shows Brisbane time", () => expect(brisbaneTime("2026-11-07 04:05:00")).toMatch(/7 Nov.*2:05\s?pm/i));
 });
+
+import { quarterOf, quarterRange } from "../src/lib";
+
+describe("BAS quarters", () => {
+  it("maps dates to quarters", () => {
+    expect(quarterOf("2026-07-01")).toBe("2026-Q3");
+    expect(quarterOf("2026-09-30")).toBe("2026-Q3");
+    expect(quarterOf("2026-11-07")).toBe("2026-Q4");
+    expect(quarterOf("2027-01-15")).toBe("2027-Q1");
+  });
+  it("gives ranges and labels", () => {
+    expect(quarterRange("2026-Q3")).toEqual({ from: "2026-07-01", to: "2026-09-30", label: "Jul to Sep 2026" });
+    expect(quarterRange("2028-Q1")).toEqual({ from: "2028-01-01", to: "2028-03-31", label: "Jan to Mar 2028" });
+    expect(quarterRange("2026-Q4")?.to).toBe("2026-12-31");
+    expect(quarterRange("2026-Q5")).toBeNull();
+  });
+});

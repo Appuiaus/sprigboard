@@ -5,13 +5,14 @@
 
 import { accountPage, accountPost, authRoute, currentUser, rateLimit, usersPage, usersPost, type AuthEnv, type User } from "./auth";
 import { passkeyAccountRoute, passkeyLoginRoute } from "./passkeys";
+import { helpBody } from "./help";
 import { mailEnabled, sendMail } from "./mail";
 import { D1_MAX_BYTES, getBytes, getFile, maxUpload, putFile, sizeLabel, StorageError } from "./storage";
 import { extractPlan, ExtractionError, isSupportedPlan, ITEM_KINDS } from "./extract";
 import { fillTemplate, jobStatuses, parseSetting, SECTIONS, SETTINGS, withDefaults, type SectionId, type SettingDef } from "./settings";
 import {
   addDays, continueFrom, formatMinutes, minutesBetween, normalisePlant, parseDuration, plantRowsFromCsv, esc, formatDollars, formatNumber, invoiceTotals, matchSymbol, parseDollars,
-  titleBlockCsv, titleBlockXml, toCsv, todayIn, localTime, percentLabel, type InvoiceLine, type Symbol, type TitleBlock,
+  titleBlockCsv, titleBlockXml, toCsv, todayIn, localTime, percentLabel, quarterOf, quarterRange, type InvoiceLine, type Symbol, type TitleBlock,
 } from "./lib";
 import {
   area, badge, confirmDelete, dialog, field, formDialog, icon, iconBtn, layout, pills, select, table, toggle,
@@ -275,6 +276,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
       ${statusBadge(s(j.status), "job", c.st)}
       ${iconBtn({ icon: "pencil", label: "Edit job", dialog: "edit-job" })}
       ${iconBtn({ icon: "receipt", label: "Create an invoice for this job", dialog: "new-invoice" })}
+      ${iconBtn({ icon: "copy", label: "Duplicate this job", dialog: "dup-job" })}
       ${iconBtn({ icon: "bin", label: "Delete job", dialog: "del-job", danger: true })}</div>
     <p class="sub">${esc(j.site_address) || "No site address yet"}</p>
     <div class="cards">
@@ -317,6 +319,9 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
     ${invoices.length ? `<h2>Invoices</h2>${table(["Invoice", "Issued", "Total", "Status", "Actions"], invRows, "")}` : ""}
     ${formDialog("edit-job", `Edit ${esc(j.job_number)}`, `/jobs/${id}`, jobFields(j, clients, tiers, jobStatuses(c.st)))}
     ${confirmDelete("del-job", `job ${s(j.job_number)}`, `/jobs/${id}/delete`)}
+    ${formDialog("dup-job", `Duplicate ${esc(j.job_number)}`, `/jobs/${id}/duplicate`, `<p class="small full">Starts a new job with the next number and the same client, size, scale, address and scope. Plans, time and invoices aren't copied.</p>
+      ${field("project", "Project or end client", s(j.project), { full: true })}
+      <div class="full">${toggle("copy_checklist", "Copy the checklist", true, "Copies the items (all unticked), for example a plant list you reuse.")}</div>`, "Duplicate")}
     ${formDialog("upload", "Upload plan files", `/jobs/${id}/files`, `<label class="fld full"><span>Plan files</span><input type="file" name="files" multiple required accept="application/pdf,image/jpeg,image/png,image/webp,image/gif"><small>PDF, JPEG or PNG, up to 30 MB each.</small></label>`, "Upload", "multipart/form-data")}
     ${formDialog("new-item", "Add checklist item", `/jobs/${id}/items`, itemFields({ kind: "plant" }, kinds), "Add")}
     ${formDialog("new-invoice", `Invoice for ${esc(j.job_number)}`, `/jobs/${id}/invoice`, invoiceFromJobFields(j, st), "Create invoice")}
@@ -338,6 +343,23 @@ function invoiceFromJobFields(j: Row, st: Record<string, string>): string {
     ${field("issued_on", "Invoice date", todayIn(st.timezone), { type: "date" })}
     <div class="full">${toggle("add_gst", `Add GST (${percentLabel(Number(st.gst_rate))})`, st.gst_on_invoices === "1", gstHint(st))}</div>
     <p class="small muted full">The invoice gets the next number and is saved as a draft.</p>`;
+}
+
+async function duplicateJob(c: Ctx, id: number): Promise<Response> {
+  const j = await getJob(c.env, id);
+  if (!j) return notFound(c, "job");
+  const f = await c.req.formData();
+  const num = await nextNumber(c.env, "job");
+  const row = await c.env.DB.prepare(
+    `INSERT INTO jobs (job_number, client_id, project, site_address, scope, tier_id, scale, notes) VALUES (?,?,?,?,?,?,?,?) RETURNING id`,
+  ).bind(num, j.client_id ?? null, s(f.get("project")).trim() || s(j.project), s(j.site_address), s(j.scope), j.tier_id ?? null, s(j.scale), "").first<{ id: number }>();
+  if (f.get("copy_checklist") === "1") {
+    await c.env.DB.prepare(
+      `INSERT INTO checklist_items (job_id, kind, label, detail, quantity, source, sort)
+       SELECT ?, kind, label, detail, quantity, 'manual', sort FROM checklist_items WHERE job_id=? AND deleted_at IS NULL`,
+    ).bind(row!.id, id).run();
+  }
+  return redirect(`/jobs/${row!.id}`, `Job ${num} created from ${s(j.job_number)}.`);
 }
 
 // ---------- Plan files ----------
@@ -489,18 +511,25 @@ async function savePlant(c: Ctx, id: number | null): Promise<Response> {
 
 async function clientsPage(c: Ctx): Promise<Response> {
   const list = await clientsList(c.env);
+  const stats = new Map((await c.env.DB.prepare(
+    `SELECT c.id, (SELECT COUNT(*) FROM jobs j WHERE j.client_id=c.id AND j.deleted_at IS NULL) AS jobs,
+            (SELECT COALESCE(SUM(total_cents),0) FROM invoices i WHERE i.client_id=c.id AND i.deleted_at IS NULL AND i.status <> 'paid') AS unpaid
+       FROM clients c WHERE c.deleted_at IS NULL`,
+  ).all<{ id: number; jobs: number; unpaid: number }>()).results.map((r) => [r.id, r]));
   const rows = list.map((cl) => [
     cl.logo_key ? `<img class="thumb" src="/logos/${cl.id}" alt="">` : '<span class="muted">None</span>',
     `<b>${esc(cl.name)}</b>${cl.contact ? `<div class="small muted">${esc(cl.contact)}</div>` : ""}`,
     esc(cl.email),
     cl.copyright ? badge("Set", "ok") : badge("Missing", "warn"),
+    `<a href="/?show=all&q=${encodeURIComponent(s(cl.name))}">${stats.get(Number(cl.id))?.jobs ?? 0}</a>`,
+    `<span class="num">${stats.get(Number(cl.id))?.unpaid ? formatDollars(stats.get(Number(cl.id))!.unpaid) : '<span class="muted">$0.00</span>'}</span>`,
     iconBtn({ icon: "pencil", label: `Edit ${s(cl.name)}`, dialog: `edit-client-${cl.id}` }) +
       iconBtn({ icon: "bin", label: `Delete ${s(cl.name)}`, dialog: `del-client-${cl.id}`, danger: true }),
   ]);
   const dlgs = list.map((cl) => formDialog(`edit-client-${cl.id}`, `Edit ${esc(cl.name)}`, `/clients/${cl.id}`, clientFields(cl), "Save", "multipart/form-data") + confirmDelete(`del-client-${cl.id}`, s(cl.name), `/clients/${cl.id}/delete`)).join("");
   const body = `<div class="bar"><h1>Clients</h1>${iconBtn({ icon: "plus", label: "Add a client", dialog: "new-client" }).replace('class="ib"', 'class="ib primary"')}</div>
     <p class="sub">Who you draw for and invoice. Each client's copyright line, disclaimer and logo go on their title blocks.</p>
-    ${table(["Logo", "Client", "Email", "Copyright", "Actions"], rows, "No clients yet. Add Shane's business first.")}
+    ${table(["Logo", "Client", "Email", "Copyright", "Jobs", "Unpaid", "Actions"], rows, "No clients yet. Add Shane's business first.")}
     ${formDialog("new-client", "Add a client", "/clients", clientFields({}), "Add", "multipart/form-data")}${dlgs}`;
   return layout({ title: "Clients", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
@@ -556,30 +585,83 @@ async function createInvoiceFromJob(c: Ctx, jobId: number): Promise<Response> {
   return redirect(`/invoices/${row!.id}`, `Invoice ${num} created as a draft.`);
 }
 
+type InvoiceFilter = "all" | "unpaid" | "overdue" | "paid";
+
+function invoiceWhere(filter: InvoiceFilter, today: string, from?: string, to?: string, basis = "accrual"): { sql: string; args: unknown[] } {
+  const conds = ["i.deleted_at IS NULL"], args: unknown[] = [];
+  if (filter === "unpaid") conds.push("i.status <> 'paid'");
+  if (filter === "paid") conds.push("i.status = 'paid'");
+  if (filter === "overdue") { conds.push("i.status <> 'paid' AND i.due_on < ?"); args.push(today); }
+  const col = basis === "cash" ? "i.paid_on" : "i.issued_on";
+  if (from) { conds.push(`${col} >= ?`); args.push(from); }
+  if (to) { conds.push(`${col} <= ?`); args.push(to); }
+  return { sql: conds.join(" AND "), args };
+}
+
+const INVOICE_SELECT = `SELECT i.*, c.name AS client_name, j.job_number FROM invoices i LEFT JOIN clients c ON c.id=i.client_id LEFT JOIN jobs j ON j.id=i.job_id`;
+
 async function invoicesPage(c: Ctx): Promise<Response> {
-  const { results } = await c.env.DB.prepare(
-    `SELECT i.*, c.name AS client_name, j.job_number FROM invoices i LEFT JOIN clients c ON c.id=i.client_id LEFT JOIN jobs j ON j.id=i.job_id
-      WHERE i.deleted_at IS NULL ORDER BY i.id DESC`,
-  ).all<Row>();
   const today = todayIn(c.st.timezone);
-  const owing = results.filter((i) => i.status !== "paid").reduce((a, i) => a + n(i.total_cents), 0);
+  const filter = (["all", "unpaid", "overdue", "paid"].includes(c.url.searchParams.get("show") ?? "") ? c.url.searchParams.get("show") : "all") as InvoiceFilter;
+  const w = invoiceWhere(filter, today);
+  const { results } = await c.env.DB.prepare(`${INVOICE_SELECT} WHERE ${w.sql} ORDER BY i.id DESC`).bind(...w.args).all<Row>();
+  const all = (await c.env.DB.prepare(`SELECT status, due_on, total_cents FROM invoices WHERE deleted_at IS NULL`).all<Row>()).results;
+  const owing = all.filter((i) => i.status !== "paid").reduce((a, i) => a + n(i.total_cents), 0);
+  const overdue = all.filter((i) => i.status !== "paid" && s(i.due_on) < today);
   const rows = results.map((i) => [
     `<a href="/invoices/${i.id}"><b>${esc(i.number)}</b></a>`,
     i.job_id ? `<a href="/jobs/${i.job_id}">${esc(i.job_number)}</a>` : "",
     esc(i.client_name),
     esc(i.issued_on),
-    `${esc(i.due_on)}${i.status !== "paid" && s(i.due_on) < today ? ` ${badge("Overdue", "bad")}` : ""}`,
+    i.status === "paid" ? `<span class="muted">Paid ${esc(i.paid_on ?? "")}</span>` : `${esc(i.due_on)}${s(i.due_on) < today ? ` ${badge("Overdue", "bad")}` : ""}`,
     `<span class="num">${formatDollars(n(i.total_cents))}</span>`,
     statusBadge(s(i.status), "invoice"),
     iconBtn({ icon: "eye", label: `Open invoice ${s(i.number)}`, href: `/invoices/${i.id}` }) +
       iconBtn({ icon: "printer", label: `Print or save ${s(i.number)} as PDF`, href: `/invoices/${i.id}?print=1` }) +
+      (i.status !== "paid" ? `<form method="post" action="/invoices/${i.id}/paid" class="inline">${iconBtn({ icon: "check", label: `Mark ${s(i.number)} as paid today` })}</form>` : "") +
       iconBtn({ icon: "bin", label: `Delete invoice ${s(i.number)}`, dialog: `del-inv-${i.id}`, danger: true }),
   ]);
   const dlgs = results.map((i) => confirmDelete(`del-inv-${i.id}`, `invoice ${s(i.number)}`, `/invoices/${i.id}/delete`)).join("");
-  const body = `<div class="bar"><h1>Invoices</h1></div>
-    <p class="sub">Create an invoice from a job (the ${icon("receipt")} button on the job). Outstanding: <b>${formatDollars(owing)}</b>.</p>
-    ${table(["Invoice", "Job", "Client", "Issued", "Due", "Total", "Status", "Actions"], rows, "No invoices yet.")}${dlgs}`;
+  // GST by BAS quarter.
+  const basis = c.st.gst_basis === "cash" ? "cash" : "accrual";
+  const forGst = (await c.env.DB.prepare(`SELECT issued_on, paid_on, status, subtotal_cents, gst_cents, total_cents FROM invoices WHERE deleted_at IS NULL AND status <> 'draft'`).all<Row>()).results;
+  const quarters = new Map<string, { n: number; sales: number; gst: number; total: number }>();
+  for (const i of forGst) {
+    const date = basis === "cash" ? (i.status === "paid" ? s(i.paid_on) : "") : s(i.issued_on);
+    if (!date) continue;
+    const q = quarterOf(date), cur = quarters.get(q) ?? { n: 0, sales: 0, gst: 0, total: 0 };
+    cur.n++; cur.sales += n(i.subtotal_cents); cur.gst += n(i.gst_cents); cur.total += n(i.total_cents);
+    quarters.set(q, cur);
+  }
+  const qRows = [...quarters.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, 8).map(([q, v]) => {
+    const r = quarterRange(q)!;
+    return [esc(r.label), String(v.n), `<span class="num">${formatDollars(v.sales)}</span>`, `<span class="num">${formatDollars(v.gst)}</span>`, `<span class="num">${formatDollars(v.total)}</span>`,
+      iconBtn({ icon: "download", label: `Invoices for ${r.label} (CSV)`, href: `/invoices.csv?from=${r.from}&to=${r.to}`, download: true })];
+  });
+  const pill = (k: InvoiceFilter, label: string) => `<a class="chip${filter === k ? " on" : ""}" href="/invoices${k === "all" ? "" : `?show=${k}`}"${filter === k ? ' aria-current="true"' : ""}>${label}</a>`;
+  const body = `<div class="bar"><h1>Invoices</h1>${iconBtn({ icon: "download", label: "Download these invoices (CSV)", href: `/invoices.csv${filter === "all" ? "" : `?show=${filter}`}`, download: true })}</div>
+    <p class="sub">Create an invoice from a job (the ${icon("receipt")} button on the job). Outstanding: <b>${formatDollars(owing)}</b>${overdue.length ? `, of which <b>${formatDollars(overdue.reduce((a, i) => a + n(i.total_cents), 0))}</b> is overdue` : ""}.</p>
+    <nav class="chips" aria-label="Filter invoices">${pill("all", "All")}${pill("unpaid", "Unpaid")}${pill("overdue", `Overdue${overdue.length ? ` (${overdue.length})` : ""}`)}${pill("paid", "Paid")}</nav>
+    ${table(["Invoice", "Job", "Client", "Issued", "Due or paid", "Total", "Status", "Actions"], rows, filter === "all" ? "No invoices yet." : "No invoices here.")}
+    <h2>GST by quarter</h2>
+    <p class="sub small">For your BAS. Grouped ${basis === "cash" ? "by the date each invoice was paid (cash basis)" : "by invoice date (accrual basis), leaving out drafts"}; change this in Settings → Invoices and GST.</p>
+    ${table(["Quarter", "Invoices", "Sales (before GST)", "GST collected", "Total", "Actions"], qRows, "Nothing to report yet.")}${dlgs}`;
   return layout({ title: "Invoices", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
+}
+
+async function invoicesCsv(c: Ctx): Promise<Response> {
+  const today = todayIn(c.st.timezone);
+  const show = c.url.searchParams.get("show") ?? "all";
+  const filter = (["all", "unpaid", "overdue", "paid"].includes(show) ? show : "all") as InvoiceFilter;
+  const iso = (k: string) => { const v = c.url.searchParams.get(k) ?? ""; return /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : undefined; };
+  const w = invoiceWhere(filter, today, iso("from"), iso("to"), c.st.gst_basis);
+  const extraDraft = iso("from") || iso("to") ? " AND i.status <> 'draft'" : "";
+  const { results } = await c.env.DB.prepare(`${INVOICE_SELECT} WHERE ${w.sql}${extraDraft} ORDER BY i.issued_on, i.id`).bind(...w.args).all<Row>();
+  const money = (cents: unknown) => (n(cents) / 100).toFixed(2);
+  const rows = results.map((i) => [s(i.number), s(i.issued_on), s(i.due_on), s(i.paid_on), s(i.status), s(i.client_name), s(i.job_number),
+    money(i.subtotal_cents), n(i.gst_registered) ? String(n(i.gst_rate)) : "0", money(i.gst_cents), money(i.total_cents)]);
+  const name = iso("from") ? `invoices-${iso("from")}-to-${iso("to") ?? today}.csv` : `invoices-${filter}-${today}.csv`;
+  return download(toCsv([["number", "issued_on", "due_on", "paid_on", "status", "client", "job", "subtotal", "gst_rate_percent", "gst", "total"], ...rows]), name, "text/csv; charset=utf-8");
 }
 
 async function invoicePage(c: Ctx, id: number): Promise<Response> {
@@ -622,6 +704,7 @@ async function invoicePage(c: Ctx, id: number): Promise<Response> {
     ${invCss}${doc}
     ${formDialog("edit-inv", `Edit ${esc(i.number)}`, `/invoices/${id}`, `${pills("status", "Status", INVOICE_STATUSES, s(i.status))}
       ${field("issued_on", "Invoice date", s(i.issued_on), { type: "date" })}${field("due_on", "Due date", s(i.due_on), { type: "date" })}
+      ${field("paid_on", "Date paid", s(i.paid_on ?? ""), { type: "date", hint: "Used when the status is Paid. Left blank, today is used." })}
       ${area("lines", "Lines", linesText, { rows: 4, hint: "One line each: description | amount | quantity (quantity is optional, default 1)." })}
       <div class="full">${toggle("add_gst", `Add GST (${percentLabel(Number(st.gst_rate))})`, gst, gstHint(st, n(i.business_gst_registered) === 1))}</div>
       ${area("notes", "Notes on the invoice", s(i.notes), { rows: 2 })}`)}
@@ -714,9 +797,10 @@ async function updateInvoice(c: Ctx, id: number): Promise<Response> {
   const t = invoiceTotals(lines, addGst, rate);
   const status = INVOICE_STATUSES.some(([k]) => k === s(f.get("status"))) ? s(f.get("status")) : "draft";
   const date = (k: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s(f.get(k))) ? s(f.get(k)) : null);
+  // Paid date: the date entered, else the one already recorded, else today; cleared if it's no longer paid.
   await c.env.DB.prepare(
-    `UPDATE invoices SET status=?, issued_on=COALESCE(?, issued_on), due_on=COALESCE(?, due_on), lines_json=?, gst_registered=?, gst_rate=?, subtotal_cents=?, gst_cents=?, total_cents=?, notes=? WHERE id=?`,
-  ).bind(status, date("issued_on"), date("due_on"), JSON.stringify(lines), addGst ? 1 : 0, rate, t.subtotal_cents, t.gst_cents, t.total_cents, s(f.get("notes")).trim(), id).run();
+    `UPDATE invoices SET status=?, paid_on=CASE WHEN ?='paid' THEN COALESCE(?, paid_on, ?) ELSE NULL END, issued_on=COALESCE(?, issued_on), due_on=COALESCE(?, due_on), lines_json=?, gst_registered=?, gst_rate=?, subtotal_cents=?, gst_cents=?, total_cents=?, notes=? WHERE id=?`,
+  ).bind(status, status, date("paid_on"), todayIn(c.st.timezone), date("issued_on"), date("due_on"), JSON.stringify(lines), addGst ? 1 : 0, rate, t.subtotal_cents, t.gst_cents, t.total_cents, s(f.get("notes")).trim(), id).run();
   return redirect(`/invoices/${id}`, "Invoice saved.");
 }
 
@@ -975,9 +1059,11 @@ export async function route(c: Ctx): Promise<Response> {
     if (p === "/settings/export.json") return c.user.role === "owner" ? exportData(c) : notFound(c);
     if (p === "/clients") return clientsPage(c);
     if (p === "/invoices") return invoicesPage(c);
+    if (p === "/invoices.csv") return invoicesCsv(c);
     if ((r = m(/^\/invoices\/(\d+)$/))) return invoicePage(c, +r[1]);
     if (p === "/settings") return settingsPage(c);
     if (p === "/account") return accountPage(c);
+    if (p === "/help") return layout({ title: "Help", path: p, user: c.user, body: helpBody() });
     if (p === "/users") return c.user.role === "owner" ? usersPage(c) : notFound(c);
     return notFound(c);
   }
@@ -990,6 +1076,7 @@ export async function route(c: Ctx): Promise<Response> {
     if ((r = m(/^\/jobs\/(\d+)$/))) return updateJob(c, +r[1]);
     if ((r = m(/^\/jobs\/(\d+)\/delete$/))) { await softDelete(env, "jobs", +r[1]); return redirect("/", "Job deleted."); }
     if ((r = m(/^\/jobs\/(\d+)\/files$/))) return uploadFiles(c, +r[1]);
+    if ((r = m(/^\/jobs\/(\d+)\/duplicate$/))) return duplicateJob(c, +r[1]);
     if ((r = m(/^\/jobs\/(\d+)\/(timer\/start|timer\/stop|time)$/))) return timeRoute(c, +r[1], r[2]);
     if ((r = m(/^\/time\/(\d+)\/delete$/))) {
       const t = await env.DB.prepare(`SELECT job_id FROM time_entries WHERE id=? AND deleted_at IS NULL`).bind(+r[1]).first<{ job_id: number }>();
@@ -1041,6 +1128,12 @@ export async function route(c: Ctx): Promise<Response> {
     if ((r = m(/^\/clients\/(\d+)$/))) return saveClient(c, +r[1]);
     if ((r = m(/^\/invoices\/(\d+)\/delete$/))) { await softDelete(env, "invoices", +r[1]); return redirect("/invoices", "Invoice deleted. Its number is not reused."); }
     if ((r = m(/^\/invoices\/(\d+)\/email$/))) return emailInvoice(c, +r[1]);
+    if ((r = m(/^\/invoices\/(\d+)\/paid$/))) {
+      const iv = await env.DB.prepare(`SELECT number FROM invoices WHERE id=? AND deleted_at IS NULL`).bind(+r[1]).first<Row>();
+      if (!iv) return notFound(c, "invoice");
+      await env.DB.prepare(`UPDATE invoices SET status='paid', paid_on=COALESCE(paid_on, ?) WHERE id=?`).bind(todayIn(c.st.timezone), +r[1]).run();
+      return redirect("/invoices", `${s(iv.number)} marked as paid.`);
+    }
     if ((r = m(/^\/invoices\/(\d+)$/))) return updateInvoice(c, +r[1]);
     if (p === "/settings") return saveSettings(c);
     if (p === "/settings/logo") {

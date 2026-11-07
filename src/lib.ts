@@ -240,3 +240,23 @@ export function localTime(utc: string, tz = DEFAULT_TZ): string {
   catch { return new Intl.DateTimeFormat("en-AU", { ...opts, timeZone: DEFAULT_TZ }).format(d); }
 }
 export const brisbaneTime = (utc: string) => localTime(utc, DEFAULT_TZ);
+
+// ---------- BAS quarters ----------
+
+/** "2026-11-07" → "2026-Q4" (calendar quarter; BAS quarters are Jul to Sep, Oct to Dec, Jan to Mar, Apr to Jun). */
+export function quarterOf(isoDate: string): string {
+  const m = Number(isoDate.slice(5, 7));
+  return `${isoDate.slice(0, 4)}-Q${Math.ceil(m / 3)}`;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "2026-Q3" → { from: "2026-07-01", to: "2026-09-30", label: "Jul to Sep 2026" }. */
+export function quarterRange(q: string): { from: string; to: string; label: string } | null {
+  const m = /^(\d{4})-Q([1-4])$/.exec(q);
+  if (!m) return null;
+  const y = Number(m[1]), first = (Number(m[2]) - 1) * 3; // 0-based month
+  const last = new Date(Date.UTC(y, first + 3, 0)).getUTCDate();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return { from: `${y}-${pad(first + 1)}-01`, to: `${y}-${pad(first + 3)}-${pad(last)}`, label: `${MONTHS[first]} to ${MONTHS[first + 2]} ${y}` };
+}

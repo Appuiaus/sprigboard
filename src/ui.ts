@@ -29,6 +29,8 @@ const ICONS: Record<string, string> = {
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
   mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>',
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
+  copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
+  help: '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>',
   play: '<path d="M7 4v16l13-8z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
@@ -174,6 +176,9 @@ tr.done td:not(.actions){color:var(--muted)}tr.done .lbl{text-decoration:line-th
 button.passkey{gap:8px;font-weight:600;border-color:var(--accent);color:var(--accent)}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;margin:16px 0 8px}.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
 #passkey-msg,#passkey-add-msg{margin-top:8px}.grow{margin-right:auto}
+.help{margin-bottom:12px;scroll-margin-top:72px}.help h2{margin-top:0}.help li{margin:4px 0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}.chip{padding:6px 14px;border-radius:999px;border:1px solid var(--line);background:var(--card);text-decoration:none;font-size:14px}
+.chip:hover{border-color:var(--accent)}.chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:600}
 .set-nav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}.set-nav a{padding:5px 12px;border-radius:999px;border:1px solid var(--line);background:var(--card);text-decoration:none;font-size:13px}.set-nav a:hover{border-color:var(--accent)}
 .set-section{margin-bottom:12px;scroll-margin-top:72px}.set-section h3{margin:0 0 2px;font-size:16px}
 .sticky-save{position:sticky;bottom:0;padding:10px 0;background:linear-gradient(transparent,var(--bg) 40%);margin-top:0}
@@ -283,6 +288,7 @@ export function layout(o: { title: string; path: string; user: LayoutUser; body:
   const header = `<header class="top"><div class="in"><a class="brand" href="/">${icon("leaf")}Sprigboard</a>
 <nav class="main" id="nav" aria-label="Main">${nav}</nav>
 <a class="who" href="/account" data-tip="Your account" aria-label="Your account (${esc(who)})"${o.path === "/account" ? ' aria-current="page"' : ""}>${icon("user")}<span>${esc(who)}</span></a>
+${iconBtn({ icon: "help", label: "Help", href: "/help" })}
 <form method="post" action="/logout" class="inline">${iconBtn({ icon: "logout", label: "Sign out" })}</form>
 <button type="button" class="ib" id="burger" aria-controls="nav" aria-expanded="false" aria-label="Open menu">${icon("menu")}</button>
 ${modeBtn}</div></header>`;

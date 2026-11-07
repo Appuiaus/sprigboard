@@ -2,6 +2,20 @@
 
 Curated, newest first: what each session did and why, with gotchas for the next session.
 
+## 2026-11-07 (late): invoice reports, duplicate job, client stats, Help
+
+- **Invoices:**
+  - filter chips (All, Unpaid, Overdue, Paid);
+  - a "mark paid" tick and `paid_on` (migration 0007). Editing keeps the recorded date unless a new one is entered;
+  - CSV export (all, a filter, or `?from=&to=`);
+  - "GST by quarter" for BAS. The new setting `gst_basis` picks accrual (by invoice date, drafts excluded) or cash
+    (by date paid). Quarters come from `quarterOf` and `quarterRange` in lib.
+- **Duplicate job:** next number, same client, size, address and scope. Optionally copies the checklist, unticked.
+- **Clients page:** job count and unpaid total columns.
+- **Help page** (`src/help.ts`), linked from the header's question mark.
+- **Gotcha:** the paid-date SQL uses `COALESCE(entered, existing, today)`. A simple "today if paid" would reset old
+  paid dates on edit.
+
 ## 2026-11-07 (night): everything adjustable is a setting
 
 - **Pedro:** "Use settings for anything that makes sense … so Jamie does not have to ask me to change code."
