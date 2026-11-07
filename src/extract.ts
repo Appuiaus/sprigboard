@@ -68,20 +68,15 @@ export function isSupportedPlan(mime: string): boolean {
   return mime === "application/pdf" || (IMAGE_TYPES as readonly string[]).includes(mime);
 }
 
-function toBase64(bytes: ArrayBuffer): string {
-  const u8 = new Uint8Array(bytes);
-  let bin = "";
-  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
-
-export function planBlock(src: PlanSource): Anthropic.Beta.BetaContentBlockParam {
-  const data = toBase64(src.bytes);
-  if (src.mime === "application/pdf") {
-    return { type: "document", source: { type: "base64", media_type: "application/pdf", data } };
-  }
-  if (!(IMAGE_TYPES as readonly string[]).includes(src.mime)) throw new Error(`Unsupported file type ${src.mime}`);
-  return { type: "image", source: { type: "base64", media_type: src.mime as ImageType, data } };
+/**
+ * The plan goes to Claude through the Files API: the Worker streams the bytes up once and refers to
+ * the file by id. That avoids base64-encoding a large PDF inside the Worker, which would blow the
+ * Workers Free CPU limit (10 ms per request). The uploaded copy is deleted straight after reading.
+ */
+export function planBlock(mime: string, fileId: string): Anthropic.Beta.BetaContentBlockParam {
+  if (mime === "application/pdf") return { type: "document", source: { type: "file", file_id: fileId } };
+  if (!(IMAGE_TYPES as readonly string[]).includes(mime)) throw new Error(`Unsupported file type ${mime}`);
+  return { type: "image", source: { type: "file", file_id: fileId } };
 }
 
 /** Validates the model's JSON and drops anything malformed rather than trusting it. */
@@ -104,8 +99,12 @@ export class ExtractionError extends Error {}
 export async function extractPlan(apiKey: string, src: PlanSource, filename: string, fetchImpl?: typeof fetch): Promise<Extraction> {
   // fetchImpl is for tests only.
   const client = new Anthropic({ apiKey, maxRetries: 2, ...(fetchImpl ? { fetch: fetchImpl, baseURL: "https://api.test" } : {}) });
+  if (!isSupportedPlan(src.mime)) throw new ExtractionError("Claude can read PDF, JPEG, PNG, GIF and WebP files.");
   let message: Anthropic.Beta.BetaMessage;
+  let fileId: string | null = null;
   try {
+    const uploaded = await client.files.upload({ file: new File([src.bytes], filename || "plan", { type: src.mime }) });
+    fileId = uploaded.id;
     message = await client.beta.messages
       .stream({
         model: EXTRACT_MODEL,
@@ -117,16 +116,19 @@ export async function extractPlan(apiKey: string, src: PlanSource, filename: str
         system: SYSTEM,
         messages: [{
           role: "user",
-          content: [planBlock(src), { type: "text", text: `Plan file: ${filename}. List its contents as described.` }],
+          content: [planBlock(src.mime, fileId), { type: "text", text: `Plan file: ${filename}. List its contents as described.` }],
         }],
       })
       .finalMessage();
   } catch (e) {
+    if (e instanceof ExtractionError) throw e;
     if (e instanceof Anthropic.AuthenticationError) throw new ExtractionError("The Claude API key is missing or wrong.");
     if (e instanceof Anthropic.RateLimitError) throw new ExtractionError("Claude is busy right now. Try again in a minute.");
     if (e instanceof Anthropic.BadRequestError) throw new ExtractionError(`Claude couldn't read this file: ${e.message}`);
     if (e instanceof Anthropic.APIError) throw new ExtractionError(`Claude API error ${e.status ?? ""}`.trim());
     throw e;
+  } finally {
+    if (fileId) await client.files.delete(fileId).catch((e) => console.error("could not delete uploaded plan", e));
   }
   if (message.stop_reason === "refusal") throw new ExtractionError("Claude declined to read this file.");
   if (message.stop_reason === "max_tokens") throw new ExtractionError("The plan has more detail than one read can hold. Try a single page.");

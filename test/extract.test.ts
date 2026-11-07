@@ -22,16 +22,15 @@ describe("parseExtraction", () => {
 });
 
 describe("planBlock", () => {
-  const bytes = new TextEncoder().encode("hello").buffer as ArrayBuffer;
-  it("sends PDFs as documents", () => {
-    expect(planBlock({ mime: "application/pdf", bytes })).toMatchObject({ type: "document", source: { media_type: "application/pdf", data: "aGVsbG8=" } });
+  it("sends PDFs as file documents", () => {
+    expect(planBlock("application/pdf", "file_1")).toEqual({ type: "document", source: { type: "file", file_id: "file_1" } });
   });
-  it("sends images as images", () => {
-    expect(planBlock({ mime: "image/jpeg", bytes })).toMatchObject({ type: "image", source: { media_type: "image/jpeg" } });
+  it("sends images as file images", () => {
+    expect(planBlock("image/jpeg", "file_2")).toEqual({ type: "image", source: { type: "file", file_id: "file_2" } });
   });
   it("rejects other files", () => {
     expect(isSupportedPlan("image/svg+xml")).toBe(false);
-    expect(() => planBlock({ mime: "image/svg+xml", bytes })).toThrow();
+    expect(() => planBlock("image/svg+xml", "f")).toThrow();
   });
 });
 
@@ -44,8 +43,18 @@ function sse(events: [string, unknown][]): Response {
 
 function fakeClaude(text: string, stopReason = "end_turn") {
   const calls: { url: string; headers: Headers; body: any }[] = [];
+  const uploads: { url: string; size: number }[] = [];
+  const deleted: string[] = [];
   const f = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input as any, init);
+    if (req.url.includes("/v1/files") && req.method === "POST") {
+      uploads.push({ url: req.url, size: (await req.arrayBuffer()).byteLength });
+      return new Response(JSON.stringify({ id: "file_abc", type: "file", filename: "plan.pdf", mime_type: "application/pdf", size_bytes: 8, created_at: "2026-11-07T00:00:00Z" }), { headers: { "content-type": "application/json" } });
+    }
+    if (req.url.includes("/v1/files/") && req.method === "DELETE") {
+      deleted.push(req.url);
+      return new Response(JSON.stringify({ id: "file_abc", type: "file_deleted" }), { headers: { "content-type": "application/json" } });
+    }
     calls.push({ url: req.url, headers: req.headers, body: JSON.parse(await req.text()) });
     return sse([
       ["message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: "claude-opus-5-5", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } }],
@@ -57,7 +66,7 @@ function fakeClaude(text: string, stopReason = "end_turn") {
       ["message_stop", { type: "message_stop" }],
     ]);
   }) as typeof fetch;
-  return { f, calls };
+  return { f, calls, uploads, deleted };
 }
 
 describe("extractPlan (fake API)", () => {
@@ -65,7 +74,7 @@ describe("extractPlan (fake API)", () => {
   const answer = JSON.stringify({ items: [{ kind: "plant", label: "Westringia fruticosa", detail: "", quantity: "8" }], scale: "1:100", site_address: "", summary: "Back yard" });
 
   it("sends the plan with the schema, model and fallback beta, and parses the answer", async () => {
-    const { f, calls } = fakeClaude(answer);
+    const { f, calls, uploads, deleted } = fakeClaude(answer);
     const out = await extractPlan("sk-test", pdf, "plan.pdf", f);
     expect(out.items).toEqual([{ kind: "plant", label: "Westringia fruticosa", detail: "", quantity: "8" }]);
     expect(out.scale).toBe("1:100");
@@ -77,13 +86,17 @@ describe("extractPlan (fake API)", () => {
     expect(c.body.stream).toBe(true);
     expect(c.body.fallbacks).toBe("default");
     expect(c.body.output_config.format.type).toBe("json_schema");
-    expect(c.body.messages[0].content[0]).toMatchObject({ type: "document", source: { media_type: "application/pdf" } });
+    expect(c.body.messages[0].content[0]).toEqual({ type: "document", source: { type: "file", file_id: "file_abc" } });
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].size).toBeGreaterThan(8); // multipart body containing the file
+    expect(deleted).toEqual([expect.stringContaining("/v1/files/file_abc")]);
     expect(c.body.thinking).toBeUndefined();
   });
 
-  it("reports a refusal plainly", async () => {
-    const { f } = fakeClaude("", "refusal");
+  it("reports a refusal plainly and still deletes the upload", async () => {
+    const { f, deleted } = fakeClaude("", "refusal");
     await expect(extractPlan("sk-test", pdf, "plan.pdf", f)).rejects.toBeInstanceOf(ExtractionError);
+    expect(deleted).toHaveLength(1);
   });
 
   it("reports an unreadable answer plainly", async () => {

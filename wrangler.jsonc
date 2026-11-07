@@ -22,10 +22,16 @@
   // (`npx wrangler r2 bucket create sprigboard-files`), uncomment this and deploy.
   // Until then uploads show "File storage isn't turned on yet".
   // "r2_buckets": [{ "binding": "FILES", "bucket_name": "sprigboard-files" }],
-  // ACCESS_TEAM_DOMAIN and ACCESS_AUD are set in the dashboard (Settings ->
-  // Variables and Secrets); keep_vars stops a deploy from wiping them. Until both
-  // are set, every page returns 503 (fails closed).
+  "vars": {
+    "APP_URL": "https://sprigboard.appui.com.au",
+    "MAIL_FROM": "Sprigboard <noreply@velosolabs.com>",
+    // Workers Free allows 10 ms CPU per request; see docs/SETUP.md "CPU limits".
+    "PASSWORD_ITERATIONS": "100000"
+  },
+  // Anything set in the dashboard survives a deploy.
   "keep_vars": true,
   "observability": { "enabled": true }
-  // Secret (dashboard or `wrangler secret put`, never in this file): ANTHROPIC_API_KEY
+  // Secrets (dashboard or `wrangler secret put`, never in this file):
+  //   ANTHROPIC_API_KEY, MAILJET_API_KEY, MAILJET_API_SECRET,
+  //   BOOTSTRAP_EMAILS (comma-separated emails that may sign in by code before they have an account)
 }
