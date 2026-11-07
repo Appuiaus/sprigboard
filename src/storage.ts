@@ -56,3 +56,14 @@ export async function getBytes(env: StorageEnv, key: string): Promise<{ bytes: A
   if (!f) return null;
   return { bytes: f.body instanceof ArrayBuffer ? f.body : await new Response(f.body).arrayBuffer(), mime: f.mime };
 }
+
+/** The first n bytes of a file (to tell, for example, a PDF-compatible .ai from a legacy one). */
+export async function getHead(env: StorageEnv, key: string, n = 1024): Promise<Uint8Array | null> {
+  if (env.FILES) {
+    const obj = await env.FILES.get(key, { range: { offset: 0, length: n } });
+    if (obj) return new Uint8Array(await obj.arrayBuffer());
+  }
+  const row = await env.DB.prepare(`SELECT substr(data, 1, ?) AS head FROM blobs WHERE key=?`).bind(n, key).first<{ head: ArrayBuffer | number[] }>();
+  if (!row) return null;
+  return row.head instanceof ArrayBuffer ? new Uint8Array(row.head) : new Uint8Array(row.head);
+}

@@ -21,6 +21,10 @@ business details; invoices and GST (rate, line wording, default notes, payment t
 digits); invoice emails (sender name, subject and message templates); plans (extra instructions for Claude,
 species and genus matching); job status names; time zone and the getting-started checklist.
 
+**File viewer:** every stored or exported file opens in a pop-up. PDFs (drawn with PDF.js, so they work on
+phones), Illustrator files saved PDF-compatible, images, CSV exports as tables, XML/JSON/text, video and audio.
+EPS, legacy .ai and Office files get a download.
+
 A getting-started checklist on the Jobs page walks through the first setup and can be hidden.
 Until R2 is enabled, files up to 1 MB (plant graphics, logos, small plans) are stored in D1 (`src/storage.ts`); bigger PDFs need R2.
 Owners can download all the data as JSON (Settings → download icon). The export holds no password hashes or other secrets.

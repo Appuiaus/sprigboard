@@ -31,6 +31,8 @@ const ICONS: Record<string, string> = {
   key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
   copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
   help: '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>',
+  zoom: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/>',
+  external: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   play: '<path d="M7 4v16l13-8z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
@@ -176,6 +178,19 @@ tr.done td:not(.actions){color:var(--muted)}tr.done .lbl{text-decoration:line-th
 button.passkey{gap:8px;font-weight:600;border-color:var(--accent);color:var(--accent)}
 .or{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;margin:16px 0 8px}.or::before,.or::after{content:"";flex:1;border-top:1px solid var(--line)}
 #passkey-msg,#passkey-add-msg{margin-top:8px}.grow{margin-right:auto}
+.thumb-btn{padding:0;border:0;background:none;cursor:zoom-in;border-radius:6px}.thumb-btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+dialog.viewer{width:min(1100px,calc(100vw - 24px));height:min(88vh,1000px);display:none;flex-direction:column}dialog.viewer[open]{display:flex}
+dialog.viewer .dlg-head{padding:10px 14px 6px}dialog.viewer iframe{flex:1;border:0;width:100%;background:var(--bg);border-radius:0 0 14px 0}
+body.frame{background:var(--bg)}body.frame main{max-width:none;padding:0}
+.v-bar{display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
+.v-name{margin-right:auto;display:flex;flex-direction:column;min-width:0}.v-name b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v-body{padding:12px}.v-img{display:flex;justify-content:center;align-items:flex-start;background:repeating-conic-gradient(#0000000d 0 25%,transparent 0 50%) 0 0/16px 16px;border-radius:10px;min-height:200px}
+.v-img[data-zoom=fit] img{max-width:100%;max-height:calc(88vh - 120px);object-fit:contain}.v-img[data-zoom=full]{overflow:auto}.v-img[data-zoom=full] img{max-width:none}
+.v-pages{display:flex;flex-direction:column;gap:12px}.v-page{background:#fff;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+.v-pdf{width:100%;height:calc(88vh - 120px);border:0;border-radius:8px;background:#fff}.v-note{margin:6px 0 0}
+.v-media{width:100%;max-height:calc(88vh - 120px);background:#000;border-radius:8px}.v-audio{width:100%}
+.v-none{max-width:560px;margin:40px auto;text-align:center}.v-none p{margin:8px 0 16px}
+pre.code{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;overflow:auto;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;max-height:calc(88vh - 120px)}
 .help{margin-bottom:12px;scroll-margin-top:72px}.help h2{margin-top:0}.help li{margin:4px 0}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}.chip{padding:6px 14px;border-radius:999px;border:1px solid var(--line);background:var(--card);text-decoration:none;font-size:14px}
 .chip:hover{border-color:var(--accent)}.chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:600}
@@ -240,6 +255,11 @@ const BODY_JS = `
  document.querySelectorAll("form[data-autosubmit] input[type=checkbox]").forEach(function(c){c.addEventListener("change",function(){c.form.submit()})});
  function tick(){document.querySelectorAll("[data-since]").forEach(function(el){var m=Math.max(0,Math.round((Date.now()-Date.parse(el.dataset.since.replace(" ","T")+"Z"))/60000)),h=Math.floor(m/60),r=m%60;el.textContent=h?(r?h+" h "+r+" min":h+" h"):r+" min"})}
  tick();setInterval(tick,30000);
+ var fv=document.getElementById("file-viewer");
+ if(fv){var fvf=fv.querySelector("iframe"),fvt=fv.querySelector("h2");
+  document.addEventListener("click",function(e){var t=e.target.closest("[data-view]");if(!t)return;e.preventDefault();
+   fvt.textContent=t.dataset.viewTitle||"File";fvf.src="/viewer?src="+encodeURIComponent(t.dataset.view);fv.showModal()});
+  fv.addEventListener("close",function(){fvf.src="about:blank"})}
  document.querySelectorAll("form[data-busy]").forEach(function(f){f.addEventListener("submit",function(){var b=f.querySelector("button:not([data-close])");if(b){b.disabled=true;b.setAttribute("aria-busy","true")}var m=document.getElementById(f.dataset.busy);if(m)m.hidden=false})});
 })();`;
 
@@ -292,11 +312,20 @@ ${iconBtn({ icon: "help", label: "Help", href: "/help" })}
 <form method="post" action="/logout" class="inline">${iconBtn({ icon: "logout", label: "Sign out" })}</form>
 <button type="button" class="ib" id="burger" aria-controls="nav" aria-expanded="false" aria-label="Open menu">${icon("menu")}</button>
 ${modeBtn}</div></header>`;
-  return new Response(shell(o.title, header, flashHtml(o.flash) + o.body, "", o.script ?? ""), { status: o.status ?? 200, headers: SECURITY_HEADERS });
+  const viewer = `<dialog id="file-viewer" class="dlg viewer" aria-labelledby="file-viewer-t"><div class="dlg-head"><h2 id="file-viewer-t">File</h2><button type="button" class="ib" data-close aria-label="Close" data-tip="Close">${icon("x")}</button></div><iframe title="File preview" src="about:blank"></iframe></dialog>`;
+  return new Response(shell(o.title, header, flashHtml(o.flash) + o.body + viewer, "", o.script ?? ""), { status: o.status ?? 200, headers: SECURITY_HEADERS });
 }
 
 /** Sign-in pages: a centred card, no navigation. */
 export function layoutBare(o: { title: string; body: string; flash?: { msg: string; err?: boolean } | null; status?: number; script?: string }): Response {
   const header = `<header class="top"><div class="in"><a class="brand" href="/login">${icon("leaf")}Sprigboard</a><span class="spacer"></span>${modeBtn}</div></header>`;
   return new Response(shell(o.title, header, `<div class="auth">${flashHtml(o.flash)}<div class="card">${o.body}</div></div>`, "bare", o.script ?? ""), { status: o.status ?? 200, headers: SECURITY_HEADERS });
+}
+
+/** A page shown inside the viewer pop-up (same-origin framing allowed). */
+export function framePage(title: string, toolbar: string, body: string): Response {
+  const html = `<!doctype html><html lang="en-AU"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>${esc(title)}</title><script>${HEAD_JS}</script><style>${CSS}</style></head><body class="frame"><main>${toolbar}<div class="v-body">${body}</div></main>
+<script>(function(){var z=document.getElementById("v-zoom"),w=document.querySelector(".v-img");if(z&&w)z.addEventListener("click",function(){var f=w.dataset.zoom==="fit";w.dataset.zoom=f?"full":"fit";var l=f?"Fit to window":"Show actual size";z.setAttribute("aria-label",l);z.dataset.tip=l;z.title=l})})();</script></body></html>`;
+  return new Response(html, { headers: { ...SECURITY_HEADERS, "x-frame-options": "SAMEORIGIN", "content-security-policy": "frame-ancestors 'self'; base-uri 'none'; form-action 'self'; object-src 'none'" } });
 }

@@ -24,6 +24,15 @@ const SECTIONS: [string, string, string][] = [
     <ul><li>plants (with pot sizes and quantities when shown),</li><li>street names,</li><li>dimensions,</li><li>other markings, and notes.</li></ul>
     <p>The list is a <b>draft</b>: check each item against the plan, and tick it off as you draw it. Edit or delete anything Claude got wrong, or add items with <b>+</b>. Reading the plan again only replaces unticked items Claude found; anything you added or ticked stays.</p>
     <p>Want Claude to do something differently, like ignore irrigation notes? Add it under Settings → Plans and title blocks → Extra instructions.</p>`],
+  ["viewer", "Viewing files", `
+    <p>Press the eye button (or a file's name or thumbnail) to open any file in a viewer without downloading it:</p>
+    <ul>
+      <li><b>Plans and PDFs:</b> every page, on computers, tablets and phones.</li>
+      <li><b>Illustrator (.ai):</b> files saved with "Create PDF Compatible File" ticked (Illustrator's default) show their artwork. Older .ai and EPS files can't be drawn in a browser; the viewer says so and offers a download.</li>
+      <li><b>Images</b> (PNG, JPEG, SVG, WebP): fit to the window, or the magnifier for actual size.</li>
+      <li><b>Exports:</b> the checklist, plant list and invoices show as tables; the title block for Illustrator shows as text.</li>
+    </ul>
+    <p>Every viewer has a download button and a button to open the file in a new tab.</p>`],
   ["plants", "Plant library", `
     <p>Your plant graphics, each with its botanical name, common name and the code used on plans. On a job, each plant in the checklist is matched to a graphic:</p>
     <ul><li>by code (e.g. LT),</li><li>by botanical or common name,</li><li>then by species (a cultivar uses its species' graphic),</li><li>then by genus (flagged "genus only").</li></ul>

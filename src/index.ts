@@ -6,8 +6,9 @@
 import { accountPage, accountPost, authRoute, currentUser, rateLimit, usersPage, usersPost, type AuthEnv, type User } from "./auth";
 import { passkeyAccountRoute, passkeyLoginRoute } from "./passkeys";
 import { helpBody } from "./help";
+import { detectKind, inlineMime, viewerContent, viewerToolbar, type ViewInfo } from "./viewer";
 import { mailEnabled, sendMail } from "./mail";
-import { D1_MAX_BYTES, getBytes, getFile, maxUpload, putFile, sizeLabel, StorageError } from "./storage";
+import { D1_MAX_BYTES, getBytes, getFile, getHead, maxUpload, putFile, sizeLabel, StorageError } from "./storage";
 import { extractPlan, ExtractionError, isSupportedPlan, ITEM_KINDS } from "./extract";
 import { fillTemplate, jobStatuses, parseSetting, SECTIONS, SETTINGS, withDefaults, type SectionId, type SettingDef } from "./settings";
 import {
@@ -15,7 +16,7 @@ import {
   titleBlockCsv, titleBlockXml, toCsv, todayIn, localTime, percentLabel, quarterOf, quarterRange, type InvoiceLine, type Symbol, type TitleBlock,
 } from "./lib";
 import {
-  area, badge, confirmDelete, dialog, field, formDialog, icon, iconBtn, layout, pills, select, table, toggle,
+  area, badge, confirmDelete, dialog, field, formDialog, framePage, icon, iconBtn, layout, pills, select, table, toggle,
 } from "./ui";
 
 export interface Env extends AuthEnv {
@@ -222,12 +223,12 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
 
   const fileRows = files.map((f) => {
     const stat = s(f.read_status) === "read" ? badge("Read", "ok") : s(f.read_status) === "failed" ? `${badge("Failed", "bad")}<div class="small muted">${esc(f.read_error)}</div>` : badge("Not read", "muted");
-    const readable = isSupportedPlan(s(f.mime));
+    const readable = isSupportedPlan(s(f.mime)) || /\.(ai|eps)$/i.test(s(f.filename));
     return [
-      `<a href="/files/${f.id}" target="_blank" rel="noopener">${esc(f.filename)}</a>${f.summary ? `<div class="small muted">${esc(f.summary)}</div>` : ""}`,
+      `<a href="/files/${f.id}" data-view="plan:${f.id}" data-view-title="${esc(f.filename)}">${esc(f.filename)}</a>${f.summary ? `<div class="small muted">${esc(f.summary)}</div>` : ""}`,
       fileSize(n(f.size)),
       stat,
-      iconBtn({ icon: "eye", label: `View ${s(f.filename)}`, href: `/files/${f.id}`, attrs: 'target="_blank" rel="noopener"' }) +
+      viewBtn(`plan:${f.id}`, s(f.filename)) + iconBtn({ icon: "download", label: `Download ${s(f.filename)}`, href: `/files/${f.id}?download=1` }) +
         (readable ? `<form method="post" action="/files/${f.id}/read" data-busy="reading">${iconBtn({ icon: "sparkle", label: hasKey ? (s(f.read_status) === "read" ? "Read this plan again with Claude" : "Read this plan with Claude") : "Add the Claude API key to read plans", attrs: hasKey ? "" : "disabled" })}</form>` : "") +
         iconBtn({ icon: "bin", label: `Delete ${s(f.filename)}`, dialog: `del-file-${f.id}`, danger: true }),
     ];
@@ -288,6 +289,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
         <dl class="small" style="margin-top:6px"><dt>Disclaimer</dt><dd>${esc(disclaimer) || '<span class="muted">None</span>'}</dd>
         <dt>Copyright</dt><dd>${esc(copyright) || '<span class="muted">Not set for this client</span>'}</dd></dl>
         <p class="small muted">Download the job's details as Illustrator variables, then use Variables → Load Variable Library (or Import a CSV data set) in your template.</p>
+        ${viewBtn(`export:/jobs/${id}/title-block.xml`, `${s(j.job_number)} title block (XML)`, "View the title block variables")}
         ${iconBtn({ icon: "download", label: "Title block for Illustrator (variable library XML)", href: `/jobs/${id}/title-block.xml`, download: true })}
         ${iconBtn({ icon: "file", label: "Title block as CSV", href: `/jobs/${id}/title-block.csv`, download: true })}</div>
     </div>
@@ -298,7 +300,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
     ${table(["File", "Size", "Read", "Actions"], fileRows, "No plan uploaded yet.")}
     <div class="bar"><h2>Checklist</h2>
       ${iconBtn({ icon: "plus", label: "Add an item by hand", dialog: "new-item" })}
-      ${items.length ? iconBtn({ icon: "download", label: "Checklist as CSV", href: `/jobs/${id}/checklist.csv`, download: true }) : ""}
+      ${items.length ? viewBtn(`export:/jobs/${id}/checklist.csv`, `${s(j.job_number)} checklist`, "View the checklist export") + iconBtn({ icon: "download", label: "Checklist as CSV", href: `/jobs/${id}/checklist.csv`, download: true }) : ""}
       ${items.some((i) => i.kind === "plant") ? iconBtn({ icon: "leaf", label: "Plant list with matched symbols (CSV)", href: `/jobs/${id}/plants.csv`, download: true }) : ""}</div>
     <p class="sub small">Claude drafts this list from the plan. Check each item against the plan as you draw it; you have the final say.</p>
     ${itemTableStyled}
@@ -322,7 +324,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
     ${formDialog("dup-job", `Duplicate ${esc(j.job_number)}`, `/jobs/${id}/duplicate`, `<p class="small full">Starts a new job with the next number and the same client, size, scale, address and scope. Plans, time and invoices aren't copied.</p>
       ${field("project", "Project or end client", s(j.project), { full: true })}
       <div class="full">${toggle("copy_checklist", "Copy the checklist", true, "Copies the items (all unticked), for example a plant list you reuse.")}</div>`, "Duplicate")}
-    ${formDialog("upload", "Upload plan files", `/jobs/${id}/files`, `<label class="fld full"><span>Plan files</span><input type="file" name="files" multiple required accept="application/pdf,image/jpeg,image/png,image/webp,image/gif"><small>PDF, JPEG or PNG, up to 30 MB each.</small></label>`, "Upload", "multipart/form-data")}
+    ${formDialog("upload", "Upload plan files", `/jobs/${id}/files`, `<label class="fld full"><span>Plan files</span><input type="file" name="files" multiple required accept="application/pdf,image/jpeg,image/png,image/webp,image/gif,.ai,.eps,.svg,application/postscript,application/illustrator"><small>PDF, Illustrator (.ai), JPEG or PNG, up to 30 MB each. Claude reads PDFs, images and Illustrator files saved with PDF compatibility.</small></label>`, "Upload", "multipart/form-data")}
     ${formDialog("new-item", "Add checklist item", `/jobs/${id}/items`, itemFields({ kind: "plant" }, kinds), "Add")}
     ${formDialog("new-invoice", `Invoice for ${esc(j.job_number)}`, `/jobs/${id}/invoice`, invoiceFromJobFields(j, st), "Create invoice")}
     ${itemDialogs}${fileDialogs}`;
@@ -387,11 +389,15 @@ async function readFile(c: Ctx, fileId: number): Promise<Response> {
   if (!f) return notFound(c, "file");
   const jobId = n(f.job_id);
   if (!c.env.ANTHROPIC_API_KEY) return redirect(`/jobs/${jobId}`, "Add the Claude API key first (see SETUP).", true);
-  if (!isSupportedPlan(s(f.mime))) return redirect(`/jobs/${jobId}`, "Claude can read PDF, JPEG, PNG, GIF and WebP files.", true);
+  // A PDF-compatible Illustrator file carries a full PDF copy, which Claude can read.
+  const planKind = detectKind(s(f.filename), s(f.mime), (await getHead(c.env, s(f.r2_key))) ?? undefined);
+  const readMime = planKind === "ai-pdf" ? "application/pdf" : s(f.mime);
+  if (planKind === "ai-legacy" || planKind === "eps") return redirect(`/jobs/${jobId}`, "This Illustrator/EPS file has no PDF copy inside, so Claude can't read it. Save it from Illustrator with \"Create PDF Compatible File\" ticked, or export a PDF.", true);
+  if (!isSupportedPlan(readMime)) return redirect(`/jobs/${jobId}`, "Claude can read PDF, Illustrator (PDF-compatible), JPEG, PNG, GIF and WebP files.", true);
   const obj = await getBytes(c.env, s(f.r2_key));
   if (!obj) return redirect(`/jobs/${jobId}`, "The stored file is missing.", true);
   try {
-    const result = await extractPlan(c.env.ANTHROPIC_API_KEY, { mime: s(f.mime), bytes: obj.bytes }, s(f.filename), undefined, c.st.plan_reading_instructions);
+    const result = await extractPlan(c.env.ANTHROPIC_API_KEY, { mime: readMime, bytes: obj.bytes }, s(f.filename).replace(/\.(ai|eps)$/i, ".pdf"), undefined, c.st.plan_reading_instructions);
     // Replace this file's earlier Claude items; keep anything Jamie added or already ticked.
     const stmts = [
       c.env.DB.prepare(`UPDATE checklist_items SET deleted_at = datetime('now') WHERE file_id=? AND source='claude' AND done=0 AND deleted_at IS NULL`).bind(fileId),
@@ -462,14 +468,14 @@ async function checklistCsv(c: Ctx, id: number, plantsOnly: boolean): Promise<Re
 async function plantsPage(c: Ctx): Promise<Response> {
   const syms = await symbolsList(c.env);
   const rows = syms.map((p) => [
-    p.r2_key && isImage(s(p.mime)) ? `<img class="thumb" src="/symbols/${p.id}" alt="">` : p.r2_key ? badge(s(p.filename).split(".").pop()?.toUpperCase() ?? "File", "muted") : '<span class="muted">None</span>',
+    p.r2_key && isImage(s(p.mime)) ? `<button type="button" class="thumb-btn" data-view="symbol:${p.id}" data-view-title="${esc(p.filename)}" aria-label="View ${esc(p.filename)}"><img class="thumb" src="/symbols/${p.id}" alt=""></button>` : p.r2_key ? badge(s(p.filename).split(".").pop()?.toUpperCase() ?? "File", "muted") : '<span class="muted">None</span>',
     `<i>${esc(p.botanical)}</i>`, esc(p.common), esc(p.code),
-    (p.r2_key ? iconBtn({ icon: "download", label: `Download ${s(p.filename)}`, href: `/symbols/${p.id}?download=1` }) : "") +
+    (p.r2_key ? viewBtn(`symbol:${p.id}`, s(p.filename)) + iconBtn({ icon: "download", label: `Download ${s(p.filename)}`, href: `/symbols/${p.id}?download=1` }) : "") +
       iconBtn({ icon: "pencil", label: "Edit plant", dialog: `edit-plant-${p.id}` }) +
       iconBtn({ icon: "bin", label: "Delete plant", dialog: `del-plant-${p.id}`, danger: true }),
   ]);
   const dlgs = syms.map((p) => formDialog(`edit-plant-${p.id}`, "Edit plant", `/plants/${p.id}`, plantFields(p), "Save", "multipart/form-data") + confirmDelete(`del-plant-${p.id}`, s(p.botanical), `/plants/${p.id}/delete`)).join("");
-  const body = `<div class="bar"><h1>Plant library</h1>${iconBtn({ icon: "upload", label: "Import plants from a CSV file", dialog: "import-plants" })}${iconBtn({ icon: "download", label: "Download the plant list (CSV)", href: "/plants.csv", download: true })}${iconBtn({ icon: "plus", label: "Add a plant", dialog: "new-plant" }).replace('class="ib"', 'class="ib primary"')}</div>
+  const body = `<div class="bar"><h1>Plant library</h1>${iconBtn({ icon: "upload", label: "Import plants from a CSV file", dialog: "import-plants" })}${viewBtn("export:/plants.csv", "Plant list", "View the plant list export")}${iconBtn({ icon: "download", label: "Download the plant list (CSV)", href: "/plants.csv", download: true })}${iconBtn({ icon: "plus", label: "Add a plant", dialog: "new-plant" }).replace('class="ib"', 'class="ib primary"')}</div>
     <p class="sub">Your plant graphics. Checklist plants are matched by code, then botanical or common name, then genus and species.</p>
     ${table(["Symbol", "Botanical name", "Common name", "Code", "Actions"], rows, "No plants yet. Add your plant graphics so jobs can match them.")}
     ${formDialog("new-plant", "Add a plant", "/plants", plantFields({}), "Add", "multipart/form-data")}
@@ -517,7 +523,7 @@ async function clientsPage(c: Ctx): Promise<Response> {
        FROM clients c WHERE c.deleted_at IS NULL`,
   ).all<{ id: number; jobs: number; unpaid: number }>()).results.map((r) => [r.id, r]));
   const rows = list.map((cl) => [
-    cl.logo_key ? `<img class="thumb" src="/logos/${cl.id}" alt="">` : '<span class="muted">None</span>',
+    cl.logo_key ? `<button type="button" class="thumb-btn" data-view="logo:${cl.id}" data-view-title="${esc(cl.name)} logo" aria-label="View ${esc(cl.name)} logo"><img class="thumb" src="/logos/${cl.id}" alt=""></button>` : '<span class="muted">None</span>',
     `<b>${esc(cl.name)}</b>${cl.contact ? `<div class="small muted">${esc(cl.contact)}</div>` : ""}`,
     esc(cl.email),
     cl.copyright ? badge("Set", "ok") : badge("Missing", "warn"),
@@ -639,7 +645,7 @@ async function invoicesPage(c: Ctx): Promise<Response> {
       iconBtn({ icon: "download", label: `Invoices for ${r.label} (CSV)`, href: `/invoices.csv?from=${r.from}&to=${r.to}`, download: true })];
   });
   const pill = (k: InvoiceFilter, label: string) => `<a class="chip${filter === k ? " on" : ""}" href="/invoices${k === "all" ? "" : `?show=${k}`}"${filter === k ? ' aria-current="true"' : ""}>${label}</a>`;
-  const body = `<div class="bar"><h1>Invoices</h1>${iconBtn({ icon: "download", label: "Download these invoices (CSV)", href: `/invoices.csv${filter === "all" ? "" : `?show=${filter}`}`, download: true })}</div>
+  const body = `<div class="bar"><h1>Invoices</h1>${viewBtn(`export:/invoices.csv${filter === "all" ? "" : `?show=${filter}`}`, "Invoices (CSV)", "View these invoices as a spreadsheet")}${iconBtn({ icon: "download", label: "Download these invoices (CSV)", href: `/invoices.csv${filter === "all" ? "" : `?show=${filter}`}`, download: true })}</div>
     <p class="sub">Create an invoice from a job (the ${icon("receipt")} button on the job). Outstanding: <b>${formatDollars(owing)}</b>${overdue.length ? `, of which <b>${formatDollars(overdue.reduce((a, i) => a + n(i.total_cents), 0))}</b> is overdue` : ""}.</p>
     <nav class="chips" aria-label="Filter invoices">${pill("all", "All")}${pill("unpaid", "Unpaid")}${pill("overdue", `Overdue${overdue.length ? ` (${overdue.length})` : ""}`)}${pill("paid", "Paid")}</nav>
     ${table(["Invoice", "Job", "Client", "Issued", "Due or paid", "Total", "Status", "Actions"], rows, filter === "all" ? "No invoices yet." : "No invoices here.")}
@@ -835,6 +841,7 @@ async function settingsPage(c: Ctx): Promise<Response> {
     <h2>Your logo</h2>
     <div class="panel bar" style="margin-bottom:12px">${st.business_logo_key ? `<img class="thumb" src="/settings/logo" alt="" style="width:auto;max-width:120px;height:40px">` : ""}
       <span class="grow"><span class="small muted">${st.business_logo_key ? "Shown at the top of your invoices." : "Add your logo to show it at the top of your invoices."}</span></span>
+      ${st.business_logo_key ? viewBtn("bizlogo", "Your logo") : ""}
       ${iconBtn({ icon: "upload", label: st.business_logo_key ? "Replace your logo" : "Upload your logo", dialog: "biz-logo" })}
       ${st.business_logo_key ? iconBtn({ icon: "bin", label: "Remove your logo", dialog: "del-biz-logo", danger: true }) : ""}</div>
     ${settingsForm(st, nextJob, nextInv)}
@@ -917,6 +924,86 @@ function gstHint(st: Record<string, string>, registeredAtTheTime = st.gst_regist
   return registeredAtTheTime
     ? "Your default is set in Settings → Add GST to invoices."
     : "Your business isn't marked as registered for GST. In Australia only GST-registered businesses may charge it.";
+}
+
+// ---------- File viewer ----------
+
+/** A small "view" button that opens the file viewer pop-up. */
+const viewBtn = (src: string, name: string, label = `View ${name}`) =>
+  `<button type="button" class="ib" data-view="${esc(src)}" data-view-title="${esc(name)}" aria-label="${esc(label)}" data-tip="${esc(label)}">${icon("eye")}</button>`;
+
+const EXPORT_PATH = /^\/(jobs\/\d+\/(title-block\.(csv|xml)|checklist\.csv|plants\.csv)|plants\.csv|invoices\.csv)(\?[\w=&.%-]*)?$/;
+
+/** A stored file behind a viewer source like "plan:12", "symbol:3", "logo:2" or "bizlogo". */
+async function storedSource(c: Ctx, src: string): Promise<{ key: string; name: string; mime: string; size?: number; download: string } | null> {
+  const [type, idText] = src.split(":"), id = Number(idText);
+  if (type === "plan") {
+    const f = await c.env.DB.prepare(`SELECT r2_key, filename, mime, size FROM plan_files WHERE id=? AND deleted_at IS NULL`).bind(id).first<Row>();
+    return f ? { key: s(f.r2_key), name: s(f.filename), mime: s(f.mime), size: n(f.size), download: `/files/${id}?download=1` } : null;
+  }
+  if (type === "symbol") {
+    const f = await c.env.DB.prepare(`SELECT r2_key, filename, mime FROM plant_symbols WHERE id=? AND deleted_at IS NULL AND r2_key IS NOT NULL`).bind(id).first<Row>();
+    return f ? { key: s(f.r2_key), name: s(f.filename), mime: s(f.mime), download: `/symbols/${id}?download=1` } : null;
+  }
+  if (type === "logo") {
+    const f = await c.env.DB.prepare(`SELECT name, logo_key FROM clients WHERE id=? AND deleted_at IS NULL AND logo_key IS NOT NULL`).bind(id).first<Row>();
+    return f ? { key: s(f.logo_key), name: `${s(f.name)} logo`, mime: "", download: `/logos/${id}?download=1` } : null;
+  }
+  if (type === "bizlogo" && c.st.business_logo_key) return { key: c.st.business_logo_key, name: "Your logo", mime: "", download: "/settings/logo?download=1" };
+  return null;
+}
+
+async function viewerRoute(c: Ctx): Promise<Response> {
+  const src = c.url.searchParams.get("src") ?? "";
+  let info: ViewInfo;
+  if (src.startsWith("export:")) {
+    const path = src.slice(7);
+    if (!EXPORT_PATH.test(path)) return notFound(c, "file");
+    const u = new URL(path, c.url.origin);
+    const res = await route({ ...c, req: new Request(u, { headers: c.req.headers }), url: u });
+    if (!res.ok) return notFound(c, "file");
+    const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") ?? "")?.[1] ?? "export";
+    const text = await res.text();
+    info = { name, kind: detectKind(name, res.headers.get("content-type") ?? ""), size: new TextEncoder().encode(text).length, downloadUrl: path, text };
+  } else {
+    const f = await storedSource(c, src);
+    if (!f) return notFound(c, "file");
+    const head = (await getHead(c.env, f.key)) ?? undefined;
+    const stored = f.mime || (await getFile(c.env, f.key))?.mime || "";
+    const kind = detectKind(f.name, stored, head);
+    info = { name: f.name, kind, size: f.size, rawUrl: `/raw?src=${encodeURIComponent(src)}`, downloadUrl: f.download };
+    if (kind === "csv" || kind === "text") {
+      const b = await getBytes(c.env, f.key);
+      info.text = b ? new TextDecoder().decode(b.bytes) : "";
+    }
+  }
+  return framePage(info.name, viewerToolbar(info, icon), viewerContent(info));
+}
+
+/** The file itself, drawn inline (images, PDFs and PDF-compatible .ai, media) and framable by the viewer. */
+async function rawRoute(c: Ctx): Promise<Response> {
+  const src = c.url.searchParams.get("src") ?? "";
+  const f = await storedSource(c, src);
+  if (!f) return new Response("Not found", { status: 404 });
+  const obj = await getFile(c.env, f.key);
+  if (!obj) return new Response("Not found", { status: 404 });
+  const head = (await getHead(c.env, f.key)) ?? undefined;
+  const kind = detectKind(f.name, f.mime || obj.mime, head);
+  const inline = ["image", "pdf", "ai-pdf", "video", "audio"].includes(kind);
+  const safeName = f.name.replace(/[^\w.-]+/g, "_");
+  return new Response(obj.body, {
+    headers: {
+      "content-type": inline ? inlineMime(kind, f.mime || obj.mime, f.name) : "application/octet-stream",
+      "content-disposition": `${inline ? "inline" : "attachment"}; filename="${kind === "ai-pdf" ? safeName.replace(/\.(ai|eps)$/i, "") + ".pdf" : safeName}"`,
+      "cache-control": "private, max-age=300",
+      "x-content-type-options": "nosniff",
+      "x-frame-options": "SAMEORIGIN",
+      // PDFs need the browser's viewer (no sandbox); everything else is sandboxed so an SVG can't run script.
+      "content-security-policy": kind === "pdf" || kind === "ai-pdf"
+        ? "frame-ancestors 'self'"
+        : "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'; sandbox",
+    },
+  });
 }
 
 // ---------- Getting started ----------
@@ -1037,7 +1124,10 @@ export async function route(c: Ctx): Promise<Response> {
     if ((r = m(/^\/jobs\/(\d+)\/plants\.csv$/))) return checklistCsv(c, +r[1], true);
     if ((r = m(/^\/files\/(\d+)$/))) {
       const f = await env.DB.prepare(`SELECT * FROM plan_files WHERE id=? AND deleted_at IS NULL`).bind(+r[1]).first<Row>();
-      return f ? serveObject(env, s(f.r2_key), s(f.filename), s(f.mime)) : notFound(c, "file");
+      if (!f) return notFound(c, "file");
+      const res = await serveObject(env, s(f.r2_key), s(f.filename), s(f.mime));
+      if (url.searchParams.get("download") === "1" && res.ok) res.headers.set("content-disposition", `attachment; filename="${s(f.filename).replace(/[^\w.-]+/g, "_")}"`);
+      return res;
     }
     if ((r = m(/^\/symbols\/(\d+)$/))) {
       const sy = await env.DB.prepare(`SELECT * FROM plant_symbols WHERE id=? AND deleted_at IS NULL`).bind(+r[1]).first<Row>();
@@ -1048,14 +1138,20 @@ export async function route(c: Ctx): Promise<Response> {
     }
     if ((r = m(/^\/logos\/(\d+)$/))) {
       const cl = await env.DB.prepare(`SELECT logo_key FROM clients WHERE id=? AND deleted_at IS NULL`).bind(+r[1]).first<Row>();
-      return serveObject(env, cl?.logo_key ? s(cl.logo_key) : null, "logo");
+      const res = await serveObject(env, cl?.logo_key ? s(cl.logo_key) : null, "logo");
+      if (url.searchParams.get("download") === "1" && res.ok) res.headers.set("content-disposition", 'attachment; filename="client-logo"');
+      return res;
     }
     if (p === "/plants") return plantsPage(c);
     if (p === "/plants.csv") {
       const syms = await symbolsList(env);
       return download(toCsv([["botanical", "common", "code", "symbol_file"], ...syms.map((x) => [s(x.botanical), s(x.common), s(x.code), s(x.filename)])]), "plant-library.csv", "text/csv; charset=utf-8");
     }
-    if (p === "/settings/logo") return serveObject(env, (await settings(env)).business_logo_key || null, "logo");
+    if (p === "/settings/logo") {
+      const res = await serveObject(env, c.st.business_logo_key || null, "logo");
+      if (url.searchParams.get("download") === "1" && res.ok) res.headers.set("content-disposition", 'attachment; filename="logo"');
+      return res;
+    }
     if (p === "/settings/export.json") return c.user.role === "owner" ? exportData(c) : notFound(c);
     if (p === "/clients") return clientsPage(c);
     if (p === "/invoices") return invoicesPage(c);
@@ -1063,6 +1159,8 @@ export async function route(c: Ctx): Promise<Response> {
     if ((r = m(/^\/invoices\/(\d+)$/))) return invoicePage(c, +r[1]);
     if (p === "/settings") return settingsPage(c);
     if (p === "/account") return accountPage(c);
+    if (p === "/viewer") return viewerRoute(c);
+    if (p === "/raw") return rawRoute(c);
     if (p === "/help") return layout({ title: "Help", path: p, user: c.user, body: helpBody() });
     if (p === "/users") return c.user.role === "owner" ? usersPage(c) : notFound(c);
     return notFound(c);
