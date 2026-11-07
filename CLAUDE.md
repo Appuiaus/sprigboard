@@ -25,6 +25,9 @@ No secrets in either.
 - **Claude API:** model `claude-opus-5-5`, structured output via `output_config.format`, server-side
   `fallbacks: "default"`. Check the current API docs before changing it.
 - Run `npm test` and `npm run typecheck` before pushing.
+- **This repo and BidSidekick's (`Appuiaus/bidsidekick`) must be private** (owner's rule, 2026-11-07). If either
+  shows as public (check with `gh api -X GET search/repositories -f q='user:Appuiaus'`), tell Pedro straight away.
+  Never commit client data, plans or secrets to them either way.
 
 ## Creating repositories (owner's rule, 2026-11-06)
 

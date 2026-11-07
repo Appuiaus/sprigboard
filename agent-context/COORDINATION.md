@@ -32,4 +32,4 @@ another session may be moving BidSidekick to its own sign-in; check that before 
 could be generalised for Sprigboard (codes plus reset and invite links) as an alternative to Mailjet secrets on Ben's
 Worker, but that's a hub PR for Pedro to merge.
 
-Gotchas: `BEN_CLOUDFLARE_ACCOUNT_ID` has a typo (take the ID from the zone). The repo is public.
+Gotchas: `BEN_CLOUDFLARE_ACCOUNT_ID` has a typo (take the ID from the zone). **The repo must be private** (owner's rule); on 2026-11-07 it was still public, and Pedro is switching it in GitHub settings.
