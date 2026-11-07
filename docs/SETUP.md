@@ -1,67 +1,95 @@
-# Setup: deploying Sprigboard on Ben's Cloudflare account
+# Setup: Sprigboard on Ben's Cloudflare account
 
-> **Status 2026-11-06:** steps 1 (D1 only) and 2 are done; the site is live and fails closed. Still to
-> do: R2 (Ben enables it, then create the bucket and uncomment `r2_buckets`), step 3 (Access + variables)
-> and the `ANTHROPIC_API_KEY` secret.
+**Live:** https://sprigboard.appui.com.au (Worker `sprigboard`; D1 `sprigboard-db`, region OC).
+Everything here is separately named. Nothing else in the account or the `appui.com.au` zone is touched,
+apart from the DNS record Cloudflare added for the custom domain.
 
-Everything here is new and separately named. Nothing existing in the account or the
-`appui.com.au` zone is changed, apart from the one DNS record Cloudflare adds for the custom domain.
-
-## 1. Create the resources (once)
+Deploy with Ben's token (the `BEN_CLOUDFLARE_API_TOKEN` in Pedro's NetWattle cloud environment). The
+environment's `BEN_CLOUDFLARE_ACCOUNT_ID` has a typo, so take the account ID from the zone:
 
 ```sh
-npx wrangler login                       # or CLOUDFLARE_API_TOKEN for Ben's account
-npx wrangler d1 create sprigboard-db --location oc   # copy the database_id into wrangler.jsonc
-npx wrangler r2 bucket create sprigboard-files
+export CLOUDFLARE_API_TOKEN="$BEN_CLOUDFLARE_API_TOKEN"
+export CLOUDFLARE_ACCOUNT_ID=$(curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  "https://api.cloudflare.com/client/v4/zones?name=appui.com.au" | python3 -c "import sys,json;print(json.load(sys.stdin)['result'][0]['account']['id'])")
 npx wrangler d1 migrations apply sprigboard-db --remote
-```
-
-## 2. Deploy
-
-```sh
 npx wrangler deploy
 ```
 
-The `routes` entry in `wrangler.jsonc` attaches **sprigboard.appui.com.au** as a custom domain;
-Cloudflare creates the DNS record and certificate. (As with BidSidekick, you can instead connect the
-GitHub repo under Workers & Pages → sprigboard → Settings → Build so every push to `main` deploys.)
+## Sign-in
 
-Until Access is set up (step 3), every page answers **503**. That is deliberate.
+Sprigboard has its own sign-in, so nobody needs a Cloudflare account and there is **no Cloudflare Access app** in
+front of it. (If one is ever created for sprigboard.appui.com.au, delete it, or visitors get an extra
+Cloudflare login screen.) People sign in with:
 
-## 3. Cloudflare Access (sign-in)
+- email and password (PBKDF2-SHA256, 100,000 iterations, salted; a lockout after 8 wrong tries in 15 minutes);
+- a 6-digit code emailed to them (10 minutes, 5 tries);
+- a passkey (Face ID, Touch ID, Windows Hello or a phone), added on the Account page.
 
-Zero Trust → Access → Applications → Add → Self-hosted:
+There is also forgot password (a one-hour, single-use link), invites from the Users page (a 7-day link), change
+password, and sign out everywhere. Sessions last 30 days in an HttpOnly, SameSite=Lax cookie. Only hashes of
+passwords, codes, links and session tokens are stored.
 
-- Name: `Sprigboard`. Domain: `sprigboard.appui.com.au`.
-- Policy: **Allow**, include **Emails**: Jamie's address (plus Pedro's or Ben's if they need it).
-  Give it its own policy; don't reuse BidSidekick's.
-- Login method: One-time PIN (or Google).
-- Copy the **Application Audience (AUD) tag**.
+### Variables and secrets on the Worker
 
-Then in Workers & Pages → sprigboard → Settings → Variables and Secrets:
-
-| Name | Type | Value |
+| Name | Kind | Value |
 |---|---|---|
-| `ACCESS_TEAM_DOMAIN` | Text | the Zero Trust team name (e.g. `lucky-glade-ee1a`) |
-| `ACCESS_AUD` | Text | the AUD tag from above |
-| `ANTHROPIC_API_KEY` | **Secret** | an Anthropic API key (console.anthropic.com), billed to whoever owns it |
+| `APP_URL` | var (wrangler.jsonc) | `https://sprigboard.appui.com.au`. Used for emailed links and as the passkey domain |
+| `MAIL_FROM` | var (wrangler.jsonc) | `Sprigboard <noreply@velosolabs.com>`. Must be a sender validated in Mailjet |
+| `PASSWORD_ITERATIONS` | var (wrangler.jsonc) | `100000` |
+| `BOOTSTRAP_EMAILS` | **secret**, set | `pedro@veloso.dev,bhmorg82@gmail.com`. These may sign in by code before they have an account, and become owners |
+| `MAILJET_API_KEY`, `MAILJET_API_SECRET` | **secret, owner to add** | The same Mailjet API key and secret as velosolabs' SMTP login |
+| `ANTHROPIC_API_KEY` | **secret, owner to add** | Plan reading |
 
-`keep_vars` in `wrangler.jsonc` stops later deploys from wiping these.
+Add a secret with `npx wrangler secret put NAME`, or in the dashboard under Workers & Pages → sprigboard →
+Settings → Variables and Secrets → Add → Secret.
 
-## 4. First use (Jamie)
+### First sign-in
 
-1. **Settings:** business name, ABN, email, payment details, whether she is registered for GST,
-   and her last paper invoice number in "Carry on from your last invoice" (e.g. `INV-0041`).
-   Set a price for each job size once she has timed a few jobs.
-2. **Clients:** add Shane's business with the copyright statement and logo he supplies.
-3. **Plant library:** add her plant graphics (SVG or PNG show a preview; AI and EPS are stored for download).
-4. **Jobs:** + → new job → upload the plan → ✦ to have Claude read it → tick items off while drawing →
-   download the title block for Illustrator → 🧾 to invoice.
+1. Add the two Mailjet secrets.
+2. Open https://sprigboard.appui.com.au → **Email me a sign-in code instead** → enter `pedro@veloso.dev`
+   (or Ben's address). The code signs you in as an owner. Then set a password and/or add a passkey on the
+   Account page.
+3. **Users → +**: invite Jamie (choose Owner if she should manage users too). She gets an email to choose a password.
 
-## Cost
+**Without email:** create an account directly. This prompts for the password and stores only its hash:
 
-- Cloudflare: Workers, D1 and R2 free tiers cover this comfortably.
-- Claude: each plan read is one request to `claude-opus-5-5` ($4 per million input tokens, $20
-  per million output). A typical one- or two-page plan costs a few cents; a large multi-page PDF
-  costs more. Requests that hit a safety decline are retried server-side on a fallback model
-  (`fallbacks: "default"`).
+```sh
+node tools/create-user.mjs pedro@veloso.dev "Pedro" owner --remote
+```
+
+Then sign in with that password, and invite Jamie from Users. While email is off, the invite link is shown on
+screen so you can send it to her yourself.
+
+## File storage (R2): waiting on Ben
+
+R2 isn't enabled on Ben's account. Until it is, uploading plans, plant graphics and logos shows "File storage
+isn't turned on yet"; everything else works. Once Ben enables R2 (dashboard → R2 → Overview):
+
+```sh
+npx wrangler r2 bucket create sprigboard-files
+# uncomment "r2_buckets" in wrangler.jsonc, then:
+npx wrangler deploy
+```
+
+## CPU limits (Workers Free)
+
+Ben's account is on Workers Free (10 ms CPU per request), by owner decision. Measured:
+
+- **Password hashing:** about 16 ms of CPU locally at 100,000 iterations. The live site handled ten in a row on 2026-11-07
+  without a CPU-limit error (1102). If 1102 errors ever appear on sign-in, set `PASSWORD_ITERATIONS` to `50000`.
+  Each account's hash upgrades or downgrades itself the next time that person signs in.
+- **Plan reading:** the plan goes to Claude through the Anthropic Files API (upload, read, delete), so the Worker
+  never base64-encodes a large PDF.
+- **Passkeys:** ES256 signature checks are cheap.
+
+## Develop locally
+
+```sh
+npm install
+printf 'MAIL_MODE="log"\nBOOTSTRAP_EMAILS="you@example.com"\nAPP_URL="http://localhost:8787"\n' > .dev.vars
+npx wrangler d1 migrations apply sprigboard-db --local
+npx wrangler dev --ip localhost --local-upstream localhost   # http://localhost:8787
+```
+
+`MAIL_MODE="log"` prints emails (codes and links) to the terminal. Use `localhost`, not `127.0.0.1`:
+passkeys need a domain name.

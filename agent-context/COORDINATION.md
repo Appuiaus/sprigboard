@@ -5,28 +5,25 @@ Delete a note once it is acted on and acknowledged. No secrets.
 
 ---
 
-## 2026-11-06: remote → Pedro / Ben — deployed; three owner steps left (VLABS-277)
+## 2026-11-07: remote → Pedro / Ben — own sign-in and passkeys live; owner steps (VLABS-277)
 
-**Live:** https://sprigboard.appui.com.au (Worker `sprigboard`, custom domain; D1 `sprigboard-db`
-`1173cda8-…`, region OC, migration 0001 applied). It answers 503 "Cloudflare Access is not configured
-yet" to everyone until step 1 is done. That is deliberate.
+https://sprigboard.appui.com.au is deployed with Sprigboard's own sign-in: password, emailed code, passkeys,
+reset and invites. **Cloudflare Access is no longer used**, so don't create an Access app for sprigboard. Owner
+steps, in order:
 
-Owner steps (the `BEN_CLOUDFLARE_API_TOKEN` in Pedro's NetWattle environment covers Workers, D1 and
-the zone, but has **no Zero Trust/Access permission**):
+1. **Mailjet secrets (Pedro):** add `MAILJET_API_KEY` and `MAILJET_API_SECRET` to the sprigboard Worker
+   (`wrangler secret put` or the dashboard). Use the velosolabs Mailjet key, with sender
+   `noreply@velosolabs.com` (it must be validated in Mailjet). **Until then nobody can sign in by code.** The
+   alternative is `node tools/create-user.mjs pedro@veloso.dev "Pedro" owner --remote` (prompts for a password).
+2. **First sign-in:** request a code for pedro@veloso.dev or bhmorg82@gmail.com (`BOOTSTRAP_EMAILS`), then invite
+   Jamie from Users. We don't have Jamie's email address yet.
+3. **R2 (Ben):** enable it. Then create `sprigboard-files`, uncomment `r2_buckets` and deploy.
+4. **`ANTHROPIC_API_KEY`** secret for plan reading. Then test on Jamie's real plans and tune `SYSTEM` in
+   `src/extract.ts`.
 
-1. **Access (Ben or Pedro, dashboard):** Zero Trust → Access → Applications → Add → Self-hosted,
-   domain `sprigboard.appui.com.au`, its own Allow policy listing Jamie's email (plus Pedro's and
-   Ben's), one-time PIN. Then, under Workers → sprigboard → Settings → Variables, set
-   `ACCESS_TEAM_DOMAIN` (the team name, e.g. `lucky-glade-ee1a` if it's the same team as BidSidekick)
-   and `ACCESS_AUD`. Or add "Access: Apps and Policies Edit" to the token and a session can do it.
-2. **R2 (Ben):** turn on R2 in the dashboard. Then a session runs
-   `npx wrangler r2 bucket create sprigboard-files`, uncomments `r2_buckets` in `wrangler.jsonc` and
-   deploys. Until then uploads say "File storage isn't turned on yet".
-3. **Claude key:** add `ANTHROPIC_API_KEY` as a Secret on the Worker. After that, try plan reading on
-   Jamie's real plans and tune `SYSTEM` in `src/extract.ts`.
+Also outstanding, outside Sprigboard: BidSidekick's Access app (the old "bid-scout" one) has an empty Worker
+destination, so bidsidekick.appui.com.au answers 403 "Missing Access token" to everyone. The fix is in the
+dashboard (the token has no Access scope): point that app at the `bidsidekick` Worker plus the public hostname
+`bidsidekick.appui.com.au`, and keep its AUD.
 
-Gotchas:
-- `BEN_CLOUDFLARE_ACCOUNT_ID` in the environment is 33 characters (a typo). Take the account ID from
-  the appui.com.au zone instead.
-- Deploy with `CLOUDFLARE_API_TOKEN=$BEN_CLOUDFLARE_API_TOKEN` plus that account ID.
-- The repo is public.
+Gotchas: `BEN_CLOUDFLARE_ACCOUNT_ID` has a typo (take the ID from the zone). The repo is public.

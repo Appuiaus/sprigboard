@@ -2,6 +2,29 @@
 
 Curated, newest first: what each session did and why, with gotchas for the next session.
 
+## 2026-11-07: own sign-in, passkeys, Workers Free tuning (cloud session)
+
+- **Why:** Pedro: Jamie must not need a Cloudflare account. So Cloudflare Access was replaced by Sprigboard's own
+  sign-in (`src/auth.ts`): email and password, emailed codes, reset links, invites and a Users page. Passkeys were
+  added on Pedro's request (`src/passkeys.ts`, @simplewebauthn/server v14, discoverable credentials, so no email is
+  needed at sign-in).
+- **Decisions:**
+  - Pedro chose Mailjet with sender `noreply@velosolabs.com` and the HTTP Send API (Workers can't speak SMTP easily).
+  - First owners come from the `BOOTSTRAP_EMAILS` secret (Pedro and Ben); Jamie gets an invite.
+  - Ben stays on Workers Free (owner decision). Measured PBKDF2 at about 16 ms per 100k iterations locally; live, ten
+    hashes in a row ran without 1102, so it stays at 100k. Each stored hash carries its own iteration count and is
+    re-hashed at sign-in when the setting changes.
+  - Plan reading moved to the Files API (upload, read, delete in `finally`), so no base64 encoding in the Worker.
+  - Emailed links use `APP_URL`, never the Host header. Answers are the same whether or not an account exists.
+    Rate limits are fixed-window rows in D1.
+  - Pedro's binary-dot site signature (byte-for-byte veloso.dev's) is on every page.
+  - Also: job search and filters with a summary, plant CSV import and download, and an owner JSON export with no secrets.
+- **Gotchas:**
+  - Passkeys need a domain, so develop on `localhost`, not `127.0.0.1`.
+  - Chrome logs 401 pages as console errors; the e2e filters those.
+  - Deleting `.wrangler/state` under a running `wrangler dev` breaks it; restart dev.
+  - A heredoc in Bash tripped the harness's rm-safety parser; use the Write tool for new files.
+
 ## 2026-11-06: first deploy (cloud session)
 
 - Deployed to Ben's account: Worker `sprigboard` on the custom domain sprigboard.appui.com.au, and D1
