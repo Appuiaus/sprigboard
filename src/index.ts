@@ -1,9 +1,9 @@
 // Sprigboard: Jamie's landscape-plan studio.
 // Jobs register, plan reading with Claude, plant library matching, title-block
 // export for Illustrator, size-tier pricing and invoices.
-// Every request must carry a valid Cloudflare Access token (fails closed).
+// Sign-in is Sprigboard's own (src/auth.ts): no Cloudflare account needed.
 
-import { verifyAccess, type AccessContext, type AccessEnv } from "./access";
+import { accountPage, accountPost, authRoute, currentUser, usersPage, usersPost, type AuthEnv, type User } from "./auth";
 import { extractPlan, ExtractionError, isSupportedPlan, ITEM_KINDS } from "./extract";
 import {
   addDays, continueFrom, esc, formatDollars, formatNumber, invoiceTotals, matchSymbol, parseDollars,
@@ -13,17 +13,14 @@ import {
   area, badge, confirmDelete, dialog, field, formDialog, icon, iconBtn, layout, pills, select, table, toggle,
 } from "./ui";
 
-export interface Env extends AccessEnv {
-  DB: D1Database;
+export interface Env extends AuthEnv {
   /** R2 bucket for plans, plant graphics and logos. Optional until R2 is turned on in the account. */
   FILES?: R2Bucket;
   ANTHROPIC_API_KEY?: string;
-  /** Local development only (.dev.vars): skips Access when the request is to localhost. */
-  DEV_ACCESS_EMAIL?: string;
 }
 
 type Row = Record<string, unknown>;
-type Ctx = { env: Env; req: Request; url: URL; email: string };
+type Ctx = { env: Env; req: Request; url: URL; user: User };
 
 const JOB_STATUSES: [string, string][] = [["new", "New"], ["drawing", "Drawing"], ["sent", "Sent to client"], ["invoiced", "Invoiced"], ["done", "Done"]];
 const INVOICE_STATUSES: [string, string][] = [["draft", "Draft"], ["sent", "Sent"], ["paid", "Paid"]];
@@ -48,8 +45,7 @@ function flashOf(url: URL) {
 }
 
 function notFound(c: Ctx, what = "page") {
-  const r = layout({ title: "Not found", path: c.url.pathname, email: c.email, body: `<h1>Not found</h1><p class="sub">That ${esc(what)} doesn't exist or was deleted.</p><a class="btn" href="/">Back to jobs</a>` });
-  return new Response(r.body, { status: 404, headers: r.headers });
+  return layout({ title: "Not found", path: c.url.pathname, user: c.user, status: 404, body: `<h1>Not found</h1><p class="sub">That ${esc(what)} doesn't exist or was deleted.</p><a class="btn" href="/">Back to jobs</a>` });
 }
 
 function download(body: string, filename: string, type: string): Response {
@@ -131,7 +127,7 @@ async function jobsPage(c: Ctx): Promise<Response> {
     <p class="sub">Each job gets the next job number. Upload the plan, let Claude read it, then tick items off as you draw.</p>
     ${table(["Job", "Project and site", "Client", "Size", "Checklist", "Status", "Actions"], rows, "No jobs yet. Press + to add the first one.")}
     ${formDialog("new-job", "New job", "/jobs", jobFields({}, clients, tiers), "Create job")}${dels}`;
-  return layout({ title: "Jobs", path: c.url.pathname, email: c.email, body, flash: flashOf(c.url) });
+  return layout({ title: "Jobs", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
 function statusBadge(st: string): string {
@@ -282,7 +278,7 @@ async function jobPage(c: Ctx, id: number): Promise<Response> {
     ${formDialog("new-item", "Add checklist item", `/jobs/${id}/items`, itemFields({ kind: "plant" }, kinds), "Add")}
     ${formDialog("new-invoice", `Invoice for ${esc(j.job_number)}`, `/jobs/${id}/invoice`, invoiceFromJobFields(j, st), "Create invoice")}
     ${itemDialogs}${fileDialogs}`;
-  return layout({ title: s(j.job_number), path: c.url.pathname, email: c.email, body, flash: flashOf(c.url) });
+  return layout({ title: s(j.job_number), path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
 function itemFields(i: Row, kinds: [string, string][]): string {
@@ -412,7 +408,7 @@ async function plantsPage(c: Ctx): Promise<Response> {
     <p class="sub">Your plant graphics. Checklist plants are matched by code, then botanical or common name, then genus and species.</p>
     ${table(["Symbol", "Botanical name", "Common name", "Code", "Actions"], rows, "No plants yet. Add your plant graphics so jobs can match them.")}
     ${formDialog("new-plant", "Add a plant", "/plants", plantFields({}), "Add", "multipart/form-data")}${dlgs}`;
-  return layout({ title: "Plant library", path: c.url.pathname, email: c.email, body, flash: flashOf(c.url) });
+  return layout({ title: "Plant library", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
 const plantFields = (p: Row) => `${field("botanical", "Botanical name", s(p.botanical), { required: true, full: true, hint: "e.g. Lomandra longifolia 'Tanika'" })}
@@ -461,7 +457,7 @@ async function clientsPage(c: Ctx): Promise<Response> {
     <p class="sub">Who you draw for and invoice. Each client's copyright line, disclaimer and logo go on their title blocks.</p>
     ${table(["Logo", "Client", "Email", "Copyright", "Actions"], rows, "No clients yet. Add Shane's business first.")}
     ${formDialog("new-client", "Add a client", "/clients", clientFields({}), "Add", "multipart/form-data")}${dlgs}`;
-  return layout({ title: "Clients", path: c.url.pathname, email: c.email, body, flash: flashOf(c.url) });
+  return layout({ title: "Clients", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
 const clientFields = (cl: Row) => `${field("name", "Business name", s(cl.name), { required: true, full: true })}
@@ -537,7 +533,7 @@ async function invoicesPage(c: Ctx): Promise<Response> {
   const body = `<div class="bar"><h1>Invoices</h1></div>
     <p class="sub">Create an invoice from a job (the ${icon("receipt")} button on the job). Outstanding: <b>${formatDollars(owing)}</b>.</p>
     ${table(["Invoice", "Job", "Client", "Issued", "Due", "Total", "Status", "Actions"], rows, "No invoices yet.")}${dlgs}`;
-  return layout({ title: "Invoices", path: c.url.pathname, email: c.email, body, flash: flashOf(c.url) });
+  return layout({ title: "Invoices", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
 async function invoicePage(c: Ctx, id: number): Promise<Response> {
@@ -581,7 +577,7 @@ async function invoicePage(c: Ctx, id: number): Promise<Response> {
       ${area("lines", "Lines", linesText, { rows: 4, hint: "One line each: description | amount | quantity (quantity is optional, default 1)." })}
       ${area("notes", "Notes on the invoice", s(i.notes), { rows: 2 })}`)}
     ${confirmDelete("del-inv", `invoice ${s(i.number)}`, `/invoices/${id}/delete`)}${autoPrint}`;
-  return layout({ title: `Invoice ${s(i.number)}`, path: c.url.pathname, email: c.email, body, flash: flashOf(c.url) });
+  return layout({ title: `Invoice ${s(i.number)}`, path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
 export function parseLines(text: string): InvoiceLine[] | null {
@@ -643,7 +639,7 @@ async function settingsPage(c: Ctx): Promise<Response> {
       ${field("invoice_last", "Carry on from your last invoice", "", { hint: "Type your last paper invoice number (e.g. INV-0042) and the next one becomes INV-0043. Leave blank to keep the current series." })}
     </div><div class="btns"><button class="btn btn-primary">Save settings</button></div></form>
     ${formDialog("new-tier", "Add a size", "/tiers", tierFields({}), "Add")}${tierDlgs}`;
-  return layout({ title: "Settings", path: c.url.pathname, email: c.email, body, flash: flashOf(c.url) });
+  return layout({ title: "Settings", path: c.url.pathname, user: c.user, body, flash: flashOf(c.url) });
 }
 
 const tierFields = (t: Row) => `${field("name", "Size name", s(t.name), { required: true })}
@@ -735,11 +731,14 @@ export async function route(c: Ctx): Promise<Response> {
     if (p === "/invoices") return invoicesPage(c);
     if ((r = m(/^\/invoices\/(\d+)$/))) return invoicePage(c, +r[1]);
     if (p === "/settings") return settingsPage(c);
+    if (p === "/account") return accountPage(c);
+    if (p === "/users") return c.user.role === "owner" ? usersPage(c) : notFound(c);
     return notFound(c);
   }
 
   if (req.method === "POST") {
-    if (!sameOrigin(req, url)) return new Response("Cross-site request refused.", { status: 403 });
+    if (p.startsWith("/account/")) return (await accountPost(c)) ?? notFound(c);
+    if (p === "/users" || p.startsWith("/users/")) return (await usersPost(c)) ?? notFound(c);
     if (p === "/jobs") return createJob(c);
     if ((r = m(/^\/jobs\/(\d+)$/))) return updateJob(c, +r[1]);
     if ((r = m(/^\/jobs\/(\d+)\/delete$/))) { await softDelete(env, "jobs", +r[1]); return redirect("/", "Job deleted."); }
@@ -797,13 +796,19 @@ export async function route(c: Ctx): Promise<Response> {
 }
 
 export default {
-  async fetch(req: Request, env: Env, ctx: ExecutionContext & { access?: AccessContext }): Promise<Response> {
-    const host = new URL(req.url).hostname;
-    const local = !!env.DEV_ACCESS_EMAIL && (host === "localhost" || host === "127.0.0.1");
-    const auth = local ? { ok: true as const, email: env.DEV_ACCESS_EMAIL! } : await verifyAccess(req, env, ctx.access);
-    if (!auth.ok) return new Response(auth.reason, { status: auth.status, headers: { "content-type": "text/plain; charset=utf-8" } });
+  async fetch(req: Request, env: Env): Promise<Response> {
+    const url = new URL(req.url);
     try {
-      return await route({ env, req, url: new URL(req.url), email: auth.email });
+      if (req.method === "POST" && !sameOrigin(req, url)) return new Response("Cross-site request refused.", { status: 403 });
+      const pub = await authRoute({ env, req, url });
+      if (pub) return pub;
+      const user = await currentUser(env, req);
+      if (!user) {
+        if (req.method !== "GET") return new Response("Please sign in again.", { status: 401 });
+        const next = url.pathname === "/" ? "" : `?next=${encodeURIComponent(url.pathname + url.search)}`;
+        return new Response(null, { status: 303, headers: { location: `/login${next}` } });
+      }
+      return await route({ env, req, url, user });
     } catch (e) {
       console.error(e);
       return new Response("Something went wrong. Please try again.", { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });

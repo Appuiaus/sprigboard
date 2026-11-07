@@ -24,6 +24,11 @@ const ICONS: Record<string, string> = {
   monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   menu: '<path d="M3 6h18M3 12h18M3 18h18"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2 20a7 7 0 0 1 14 0M16 4.5a3.5 3.5 0 0 1 0 7M18 20a7 7 0 0 0-2.5-5.4"/>',
+  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
+  mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>',
+  power: '<path d="M12 2v10M18.4 6.6a9 9 0 1 1-12.8 0"/>',
 };
 
 export const icon = (name: string) =>
@@ -105,7 +110,8 @@ header.top{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg
 nav.main{display:flex;gap:2px;margin-left:8px;flex-wrap:wrap}
 nav.main a{display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:8px;text-decoration:none;color:var(--muted)}
 nav.main a:hover{background:var(--accent-soft);color:var(--fg)}nav.main a[aria-current]{background:var(--accent-soft);color:var(--fg);font-weight:600}
-.top .who{margin-left:auto;color:var(--muted);font-size:13px}
+.top .who{margin-left:auto;color:var(--muted);font-size:13px;display:flex;align-items:center;gap:6px;text-decoration:none;padding:6px 8px;border-radius:8px}.top .who:hover,.top .who[aria-current]{background:var(--accent-soft);color:var(--fg)}
+form.inline{display:inline}.spacer{margin-left:auto}
 #burger{display:none}
 h1{font-size:24px;margin:8px 0 4px}h2{font-size:18px;margin:24px 0 8px}.sub{color:var(--muted);margin:0 0 16px}
 .bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.bar h1,.bar h2{margin-right:auto}
@@ -158,9 +164,13 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);
 .thumb{width:36px;height:36px;object-fit:contain;border-radius:6px;background:#fff;border:1px solid var(--line);vertical-align:middle}
 tr.done td:not(.actions){color:var(--muted)}tr.done .lbl{text-decoration:line-through}
 .mode-btn{margin-left:4px}
+.auth{max-width:420px;margin:6vh auto 0}.auth .card{background:linear-gradient(160deg,var(--dlg-a),var(--dlg-b));border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:14px;padding:24px;box-shadow:var(--shadow)}
+.auth h1{margin-top:0}.stack{display:flex;flex-direction:column;gap:12px}.btn.wide{justify-content:center;width:100%;padding:10px}
+.alt{display:flex;flex-direction:column;gap:8px;margin-top:16px;font-size:14px}.alt a{display:inline-flex;align-items:center;gap:6px;color:var(--accent)}
+input.code{font-size:24px;letter-spacing:8px;text-align:center;font-variant-numeric:tabular-nums}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 @media (max-width:720px){
- .top .who{display:none}#burger{display:inline-flex;margin-left:auto}
+ .top .who span{display:none}#burger{display:inline-flex}
  nav.main{display:none;position:absolute;left:0;right:0;top:100%;flex-direction:column;background:var(--bg);border-bottom:1px solid var(--line);padding:8px 16px;margin:0}
  nav.main.open{display:flex}
  .grid{grid-template-columns:1fr}
@@ -188,7 +198,7 @@ const BODY_JS = `
   else{root.dataset.theme=n;try{localStorage.setItem("sb-mode",n)}catch(e){}}paint()});
  paint();
  var bg=document.getElementById("burger"),nav=document.getElementById("nav");
- bg.addEventListener("click",function(){var o=nav.classList.toggle("open");bg.setAttribute("aria-expanded",o);bg.setAttribute("aria-label",o?"Close menu":"Open menu")});
+ if(bg)bg.addEventListener("click",function(){var o=nav.classList.toggle("open");bg.setAttribute("aria-expanded",o);bg.setAttribute("aria-label",o?"Close menu":"Open menu")});
  document.addEventListener("click",function(e){var t=e.target.closest("[data-open]");if(t){var d=document.getElementById(t.dataset.open);if(d){d.showModal();var f=d.querySelector("input:not([type=hidden]),select,textarea");if(f)f.focus()}}
   var c=e.target.closest("[data-close]");if(c){c.closest("dialog").close()}
   if(e.target.tagName==="DIALOG"){var r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)e.target.close()}});
@@ -203,23 +213,48 @@ const BODY_JS = `
  document.querySelectorAll("form[data-busy]").forEach(function(f){f.addEventListener("submit",function(){var b=f.querySelector("button:not([data-close])");if(b){b.disabled=true;b.setAttribute("aria-busy","true")}var m=document.getElementById(f.dataset.busy);if(m)m.hidden=false})});
 })();`;
 
-export function layout(o: { title: string; path: string; email: string; body: string; flash?: { msg: string; err?: boolean } | null }): Response {
-  const nav = NAV.map(([href, label, ic]) => {
+const SECURITY_HEADERS = {
+  "content-type": "text/html; charset=utf-8",
+  "x-robots-tag": "noindex",
+  "cache-control": "no-store",
+  "x-frame-options": "DENY",
+  "referrer-policy": "same-origin",
+  "x-content-type-options": "nosniff",
+  "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'",
+};
+
+function shell(title: string, header: string, main: string, bodyClass = ""): string {
+  return `<!doctype html><html lang="en-AU"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>${esc(title)} · Sprigboard</title>
+<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#3f7d4e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${ICONS.leaf}</svg>`)}">
+<script>${HEAD_JS}</script><style>${CSS}</style></head><body${bodyClass ? ` class="${bodyClass}"` : ""}>
+${header}<main>${main}</main><script>${BODY_JS}</script></body></html>`;
+}
+
+const flashHtml = (f?: { msg: string; err?: boolean } | null) => (f ? `<div class="flash${f.err ? " err" : ""}" role="status">${esc(f.msg)}</div>` : "");
+const modeBtn = `<button type="button" class="ib mode-btn" id="mode"><span data-m="system">${icon("monitor")}</span><span data-m="light" hidden>${icon("sun")}</span><span data-m="dark" hidden>${icon("moon")}</span></button>`;
+
+export interface LayoutUser { name: string; email: string; role: string }
+
+export function layout(o: { title: string; path: string; user: LayoutUser; body: string; flash?: { msg: string; err?: boolean } | null; status?: number }): Response {
+  const items = o.user.role === "owner" ? [...NAV, ["/users", "Users", "users"] as [string, string, string]] : NAV;
+  const nav = items.map(([href, label, ic]) => {
     const active = href === "/" ? o.path === "/" || o.path.startsWith("/jobs") : o.path.startsWith(href);
     return `<a href="${href}"${active ? ' aria-current="page"' : ""}>${icon(ic)}${label}</a>`;
   }).join("");
-  const flash = o.flash ? `<div class="flash${o.flash.err ? " err" : ""}" role="status">${esc(o.flash.msg)}</div>` : "";
-  const html = `<!doctype html><html lang="en-AU"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
-<title>${esc(o.title)} · Sprigboard</title>
-<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#3f7d4e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${ICONS.leaf}</svg>`)}">
-<script>${HEAD_JS}</script><style>${CSS}</style></head><body>
-<header class="top"><div class="in"><a class="brand" href="/">${icon("leaf")}Sprigboard</a>
+  const who = o.user.name || o.user.email;
+  const header = `<header class="top"><div class="in"><a class="brand" href="/">${icon("leaf")}Sprigboard</a>
 <nav class="main" id="nav" aria-label="Main">${nav}</nav>
-<span class="who">${esc(o.email)}</span>
+<a class="who" href="/account" data-tip="Your account" aria-label="Your account (${esc(who)})"${o.path === "/account" ? ' aria-current="page"' : ""}>${icon("user")}<span>${esc(who)}</span></a>
+<form method="post" action="/logout" class="inline">${iconBtn({ icon: "logout", label: "Sign out" })}</form>
 <button type="button" class="ib" id="burger" aria-controls="nav" aria-expanded="false" aria-label="Open menu">${icon("menu")}</button>
-<button type="button" class="ib mode-btn" id="mode"><span data-m="system">${icon("monitor")}</span><span data-m="light" hidden>${icon("sun")}</span><span data-m="dark" hidden>${icon("moon")}</span></button>
-</div></header>
-<main>${flash}${o.body}</main><script>${BODY_JS}</script></body></html>`;
-  return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "x-robots-tag": "noindex", "cache-control": "no-store" } });
+${modeBtn}</div></header>`;
+  return new Response(shell(o.title, header, flashHtml(o.flash) + o.body), { status: o.status ?? 200, headers: SECURITY_HEADERS });
+}
+
+/** Sign-in pages: a centred card, no navigation. */
+export function layoutBare(o: { title: string; body: string; flash?: { msg: string; err?: boolean } | null; status?: number }): Response {
+  const header = `<header class="top"><div class="in"><a class="brand" href="/login">${icon("leaf")}Sprigboard</a><span class="spacer"></span>${modeBtn}</div></header>`;
+  return new Response(shell(o.title, header, `<div class="auth">${flashHtml(o.flash)}<div class="card">${o.body}</div></div>`, "bare"), { status: o.status ?? 200, headers: SECURITY_HEADERS });
 }
