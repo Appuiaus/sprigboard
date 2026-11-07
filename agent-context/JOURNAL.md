@@ -2,6 +2,21 @@
 
 Curated, newest first: what each session did and why, with gotchas for the next session.
 
+## 2026-11-07 (later): time tracking, D1 file fallback, invoice logo and email, onboarding
+
+- **Time per job** (`time_entries`): a start/stop timer (one running timer per person; starting another stops the
+  first) and hand-entered durations ("90", "1:30", "1.5h"). Settings → "How long jobs take" shows average,
+  shortest and longest per size, plus the price per hour, which comes from Jamie's plan to time practice jobs
+  before setting prices.
+- **`src/storage.ts`:** R2 when bound, otherwise D1 `blobs` for files up to 1 MB, so the plant library and logos
+  work before Ben enables R2. Reads check R2 then D1, so nothing needs migrating later. A `StorageError` redirects
+  back to the referring page with the message.
+- **Invoices:** the business logo (Settings), and "Email invoice" to the client's address with Reply-To set to
+  Jamie's email (Mailjet `ReplyTo`). A draft becomes Sent. The email HTML uses inline styles only. Rate-limited to
+  5 per invoice per hour.
+- **A getting-started checklist** on Jobs (6 steps; hideable through the `onboarding_hidden` setting).
+- **Gotcha:** job and invoice statuses share a "sent" key, so `statusBadge` takes a kind.
+
 ## 2026-11-07: own sign-in, passkeys, Workers Free tuning (cloud session)
 
 - **Why:** Pedro: Jamie must not need a Cloudflare account. So Cloudflare Access was replaced by Sprigboard's own

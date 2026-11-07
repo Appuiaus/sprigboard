@@ -62,8 +62,9 @@ screen so you can send it to her yourself.
 
 ## File storage (R2): waiting on Ben
 
-R2 isn't enabled on Ben's account. Until it is, uploading plans, plant graphics and logos shows "File storage
-isn't turned on yet"; everything else works. Once Ben enables R2 (dashboard → R2 → Overview):
+R2 isn't enabled on Ben's account. Until it is, files up to 1 MB (plant graphics, logos, small plans) are kept in D1
+(`blobs` table) and bigger uploads are refused with an explanation. Files stay readable after R2 is switched on:
+reads look in R2 first, then D1. Once Ben enables R2 (dashboard → R2 → Overview):
 
 ```sh
 npx wrangler r2 bucket create sprigboard-files

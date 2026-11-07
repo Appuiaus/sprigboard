@@ -12,9 +12,12 @@ Sprigboard handles the work around the drawing:
 | **Plan reading** | Claude (`claude-opus-5-5`) reads a plan and drafts a checklist of plants, street names, dimensions, markings and notes. Jamie ticks each item off against the plan; the AI drafts, she decides. Blank job fields (scale, address) are filled from the plan, never overwritten. |
 | **Plant library** | CSV import and download. Jamie's plant graphics, with botanical name, common name and plan code. Checklist plants are matched by code, then exact name, then genus and species, then genus (weaker matches are flagged). |
 | **Title block** | Scale, client, project, address, date, disclaimer ("Not for construction" by default), the client's copyright line and "drawn by" are exported per job as an Illustrator variable library (XML) or a CSV data set. |
+| **Time** | A start/stop timer and hand-entered time on each job. Settings shows how long each job size takes on average and what its price works out to per hour, which Jamie uses to set prices (she doesn't bill by the hour). |
 | **Pricing** | Fixed prices by job size (Small, Medium, Large, Extra large, all editable), not by the hour. |
-| **Invoices** | Created from a job at its size price, numbered on from Jamie's last paper invoice, with optional 10% GST, payment details, draft/sent/paid status, overdue flag, and print or save as PDF from the browser. |
+| **Invoices** | Jamie's own logo at the top; email an invoice to the client (replies go to her) once email is set up. Created from a job at its size price, numbered on from Jamie's last paper invoice, with optional 10% GST, payment details, draft/sent/paid status, overdue flag, and print or save as PDF from the browser. |
 
+A getting-started checklist on the Jobs page walks through the first setup and can be hidden.
+Until R2 is enabled, files up to 1 MB (plant graphics, logos, small plans) are stored in D1 (`src/storage.ts`); bigger PDFs need R2.
 Owners can download all the data as JSON (Settings → download icon). The export holds no password hashes or other secrets.
 Every page carries Pedro's binary-dot site signature (the same mark as veloso.dev and velosolabs.com).
 
